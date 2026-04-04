@@ -1,39 +1,17 @@
-#!/usr/bin/env python3
-"""
-============================================================================
-MicroRV8-GT - Simulation GUI
-============================================================================
-Herramienta grafica para compilar y simular con Icarus Verilog + GTKWave.
-
-Requiere:
-  - Python 3.8+
-  - Icarus Verilog (iverilog, vvp) en PATH
-  - GTKWave en PATH o ruta configurada abajo
-
-Uso:
-  python3 sim_gui.py
-============================================================================
-"""
-
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, scrolledtext
 import subprocess
-import os
-import sys
 import shutil
-from pathlib import Path
+import sys
+import os
+import threading
+import pathlib
 
-# ---------------------------------------------------------------------------
-# Configuracion: ajustar si GTKWave no esta en PATH
-# ---------------------------------------------------------------------------
-# Windows: descargar desde https://sourceforge.net/projects/gtkwave/
-# Extraer y apuntar GTKWAVE_PATH al ejecutable gtkwave.exe
-# Ejemplo:
-#   GTKWAVE_PATH = r"C:\gtkwave64\bin\gtkwave.exe"
-# Dejar en None para buscar en PATH automaticamente
+# Si GTKWave no esta en PATH, configurar la ruta aqui:
+# Windows: GTKWAVE_PATH = r"C:\gtkwave64\bin\gtkwave.exe"
 GTKWAVE_PATH = None
 
-# Archivos del proyecto (en orden de compilacion)
+# Orden de compilacion de los modulos del proyecto
 PROJECT_FILES = [
     "alu.v",
     "regfile.v",
@@ -45,266 +23,379 @@ PROJECT_FILES = [
     "pwm.v",
     "uart_loader.v",
     "microrv8_system.v",
+    "tang_nano_top.v",
 ]
 
-# ---------------------------------------------------------------------------
-# Logica auxiliar
-# ---------------------------------------------------------------------------
 
-def find_gtkwave() -> str | None:
-    if GTKWAVE_PATH and Path(GTKWAVE_PATH).exists():
+def find_gtkwave():
+    if GTKWAVE_PATH and pathlib.Path(GTKWAVE_PATH).exists():
         return GTKWAVE_PATH
     found = shutil.which("gtkwave")
     if found:
         return found
-    # Rutas comunes en Windows
-    common_win = [
-        r"C:\gtkwave64\bin\gtkwave.exe",
-        r"C:\Program Files\GTKWave\bin\gtkwave.exe",
-        r"C:\gtkwave\bin\gtkwave.exe",
-    ]
-    for p in common_win:
-        if Path(p).exists():
+    for p in [r"C:\gtkwave64\bin\gtkwave.exe",
+              r"C:\Program Files\GTKWave\bin\gtkwave.exe"]:
+        if pathlib.Path(p).exists():
             return p
     return None
 
 
-def find_tool(name: str) -> str | None:
-    return shutil.which(name)
-
-
-# ---------------------------------------------------------------------------
-# GUI
-# ---------------------------------------------------------------------------
-
 class SimGUI:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root):
         self.root = root
         self.root.title("MicroRV8-GT Simulator")
-        self.root.geometry("700x550")
+        self.root.geometry("780x640")
         self.root.resizable(True, True)
 
-        self.project_dir = tk.StringVar(value=str(Path(__file__).parent))
+        self.project_dir = tk.StringVar(value=str(pathlib.Path(__file__).parent))
         self.tb_file     = tk.StringVar()
-        self.extra_files = tk.StringVar()  # archivos .v adicionales separados por coma
+        self.test_file   = tk.StringVar()
+        self.top_module  = tk.StringVar()
+        self.mode        = tk.IntVar(value=1)
         self.vvp_path    = None
 
-        self._check_tools()
+        self.gtkwave_exe = find_gtkwave()
+        self.iverilog_ok = bool(shutil.which("iverilog"))
+        try:
+            import cocotb_tools.runner
+            self.cocotb_ok = True
+        except ImportError:
+            self.cocotb_ok = False
+
         self._build_ui()
 
-    def _check_tools(self):
-        self.iverilog_ok = find_tool("iverilog") is not None
-        self.vvp_ok      = find_tool("vvp") is not None
-        self.gtkwave_exe = find_gtkwave()
+    # ------------------------------------------------------------------ UI
 
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 4}
+        P = {"padx": 8, "pady": 3}
 
-        # -- Directorio del proyecto --
-        frm_dir = tk.LabelFrame(self.root, text="Directorio del proyecto")
-        frm_dir.pack(fill="x", **pad)
-        tk.Entry(frm_dir, textvariable=self.project_dir, width=70).pack(
+        # Directorio
+        f = tk.LabelFrame(self.root, text="Directorio del proyecto")
+        f.pack(fill="x", **P)
+        tk.Entry(f, textvariable=self.project_dir, width=70).pack(
             side="left", padx=4, pady=4)
-        tk.Button(frm_dir, text="Buscar",
-                  command=self._select_dir).pack(side="left", padx=4)
+        tk.Button(f, text="...", command=self._pick_dir, width=3).pack(side="left")
 
-        # -- Testbench --
-        frm_tb = tk.LabelFrame(self.root, text="Testbench (.v)")
-        frm_tb.pack(fill="x", **pad)
-        tk.Entry(frm_tb, textvariable=self.tb_file, width=70).pack(
+        # Modo
+        fm = tk.LabelFrame(self.root, text="Modo de simulacion")
+        fm.pack(fill="x", **P)
+        tk.Radiobutton(fm,
+            text="Testbench Verilog  —  iverilog + vvp + GTKWave",
+            variable=self.mode, value=1,
+            command=self._mode_changed).pack(anchor="w", padx=8, pady=2)
+        tk.Radiobutton(fm,
+            text="cocotb  —  Python directo, sin Make ni Makefile",
+            variable=self.mode, value=2,
+            command=self._mode_changed).pack(anchor="w", padx=8, pady=2)
+
+        # Panel modo 1
+        self.frm_v = tk.LabelFrame(self.root, text="Testbench .v")
+        tk.Entry(self.frm_v, textvariable=self.tb_file, width=68).pack(
             side="left", padx=4, pady=4)
-        tk.Button(frm_tb, text="Buscar",
-                  command=self._select_tb).pack(side="left", padx=4)
+        tk.Button(self.frm_v, text="...", command=self._pick_tb, width=3
+                  ).pack(side="left")
 
-        # -- Archivos extra --
-        frm_extra = tk.LabelFrame(self.root, text="Archivos .v adicionales (opcional, separar con coma)")
-        frm_extra.pack(fill="x", **pad)
-        tk.Entry(frm_extra, textvariable=self.extra_files, width=70).pack(
-            padx=4, pady=4, fill="x")
+        # Panel modo 2
+        self.frm_c = tk.LabelFrame(self.root, text="Test cocotb")
+        r = tk.Frame(self.frm_c)
+        r.pack(fill="x", padx=4, pady=4)
+        tk.Label(r, text="Archivo .py:", width=12, anchor="w").grid(
+            row=0, column=0, sticky="w")
+        tk.Entry(r, textvariable=self.test_file, width=55).grid(
+            row=0, column=1, padx=4)
+        tk.Button(r, text="...", command=self._pick_test, width=3).grid(
+            row=0, column=2)
+        tk.Label(r, text="Top module:", width=12, anchor="w").grid(
+            row=1, column=0, sticky="w", pady=(4,0))
+        tk.Entry(r, textvariable=self.top_module, width=30).grid(
+            row=1, column=1, sticky="w", padx=4, pady=(4,0))
+        tk.Label(r, text="nombre del modulo Verilog DUT",
+                 fg="gray").grid(row=1, column=1, sticky="e", padx=4)
 
-        # -- Estado de herramientas --
-        frm_tools = tk.LabelFrame(self.root, text="Estado de herramientas")
-        frm_tools.pack(fill="x", **pad)
-        iv_color  = "green" if self.iverilog_ok else "red"
-        vvp_color = "green" if self.vvp_ok else "red"
-        gtk_color = "green" if self.gtkwave_exe else "orange"
-        tk.Label(frm_tools, text=f"iverilog: {'OK' if self.iverilog_ok else 'NO ENCONTRADO'}",
-                 fg=iv_color).pack(side="left", padx=8)
-        tk.Label(frm_tools, text=f"vvp: {'OK' if self.vvp_ok else 'NO ENCONTRADO'}",
-                 fg=vvp_color).pack(side="left", padx=8)
-        gtk_txt = self.gtkwave_exe if self.gtkwave_exe else "NO ENCONTRADO"
-        tk.Label(frm_tools, text=f"gtkwave: {gtk_txt}", fg=gtk_color,
-                 wraplength=400, justify="left").pack(side="left", padx=8)
+        # Herramientas
+        ft = tk.LabelFrame(self.root, text="Herramientas")
+        ft.pack(fill="x", **P)
+        self._status(ft, "iverilog", self.iverilog_ok)
+        self._status(ft, "GTKWave",  bool(self.gtkwave_exe),
+                     self.gtkwave_exe or "NO — ver 01_INSTALACION.md")
+        self._status(ft, "cocotb",   self.cocotb_ok,
+                     "OK" if self.cocotb_ok else "NO — pip install cocotb")
 
-        # -- Botones de accion --
-        frm_btn = tk.Frame(self.root)
-        frm_btn.pack(fill="x", **pad)
-        tk.Button(frm_btn, text="1. Compilar (iverilog)", height=2,
-                  command=self._compile, bg="#2196F3", fg="white",
-                  font=("Arial", 10, "bold")).pack(side="left", fill="x",
-                  expand=True, padx=2)
-        tk.Button(frm_btn, text="2. Simular (vvp)", height=2,
-                  command=self._simulate, bg="#4CAF50", fg="white",
-                  font=("Arial", 10, "bold")).pack(side="left", fill="x",
-                  expand=True, padx=2)
-        tk.Button(frm_btn, text="3. Abrir GTKWave", height=2,
-                  command=self._open_gtkwave, bg="#FF9800", fg="white",
-                  font=("Arial", 10, "bold")).pack(side="left", fill="x",
-                  expand=True, padx=2)
-        tk.Button(frm_btn, text="Todo en uno", height=2,
-                  command=self._run_all, bg="#9C27B0", fg="white",
-                  font=("Arial", 10, "bold")).pack(side="left", fill="x",
-                  expand=True, padx=2)
+        # Botones
+        fb = tk.Frame(self.root)
+        fb.pack(fill="x", **P)
+        btns = [
+            ("Compilar",  self._compile,   "#1565C0"),
+            ("Simular",   self._simulate,  "#2E7D32"),
+            ("GTKWave",   self._gtkwave,   "#E65100"),
+            ("Todo",      self._run_all,   "#6A1B9A"),
+            ("Limpiar",   self._clear,     "#37474F"),
+        ]
+        for label, cmd, color in btns:
+            tk.Button(fb, text=label, command=cmd, height=2,
+                      bg=color, fg="white", font=("Arial", 10, "bold"),
+                      activebackground=color, relief="flat"
+                      ).pack(side="left", fill="x", expand=True, padx=2)
 
-        # -- Log --
-        frm_log = tk.LabelFrame(self.root, text="Log")
-        frm_log.pack(fill="both", expand=True, **pad)
-        self.log = scrolledtext.ScrolledText(frm_log, height=12, font=("Courier", 9))
+        # Log
+        fl = tk.LabelFrame(self.root, text="Log")
+        fl.pack(fill="both", expand=True, **P)
+        self.log = scrolledtext.ScrolledText(
+            fl, height=14, font=("Courier New", 9),
+            bg="#1e1e1e", fg="#d4d4d4", insertbackground="white")
         self.log.pack(fill="both", expand=True, padx=4, pady=4)
 
-    # -- Callbacks --
+        self._mode_changed()
 
-    def _select_dir(self):
-        d = filedialog.askdirectory()
+    def _status(self, parent, name, ok, text=None):
+        t = text or ("OK" if ok else "NO ENCONTRADO")
+        tk.Label(parent, text=f"  {name}: {t}",
+                 fg="#2E7D32" if ok else "#B71C1C"
+                 ).pack(side="left", padx=8)
+
+    def _mode_changed(self):
+        if self.mode.get() == 1:
+            self.frm_c.pack_forget()
+            self.frm_v.pack(fill="x", padx=8, pady=3, before=self.root.pack_slaves()[4])
+        else:
+            self.frm_v.pack_forget()
+            self.frm_c.pack(fill="x", padx=8, pady=3, before=self.root.pack_slaves()[3])
+
+    # ------------------------------------------------------------ Selectores
+
+    def _pick_dir(self):
+        d = filedialog.askdirectory(initialdir=self.project_dir.get())
         if d:
             self.project_dir.set(d)
 
-    def _select_tb(self):
+    def _pick_tb(self):
         f = filedialog.askopenfilename(
             initialdir=self.project_dir.get(),
             filetypes=[("Verilog", "*.v")])
         if f:
             self.tb_file.set(f)
 
-    def _log(self, msg: str):
+    def _pick_test(self):
+        f = filedialog.askopenfilename(
+            initialdir=self.project_dir.get(),
+            filetypes=[("Python", "*.py")])
+        if f:
+            self.test_file.set(f)
+            stem = pathlib.Path(f).stem
+            if stem.startswith("test_") and not self.top_module.get():
+                self.top_module.set(stem[5:])
+
+    # ------------------------------------------------------------------ Log
+
+    def _log(self, msg):
         self.log.insert("end", msg + "\n")
         self.log.see("end")
         self.root.update()
 
-    def _get_project_files(self) -> list[str]:
-        """Obtiene lista completa de archivos .v del proyecto."""
-        proj_dir = Path(self.project_dir.get())
-        files = []
+    def _log_safe(self, msg):
+        """Loggear desde un hilo secundario."""
+        self.root.after(0, self._log, msg)
+
+    def _clear(self):
+        self.log.delete("1.0", "end")
+
+    # ---------------------------------------------------------- Archivos .v
+
+    def _get_sources(self):
+        proj = pathlib.Path(self.project_dir.get())
+        out  = []
         for name in PROJECT_FILES:
-            p = proj_dir / name
+            p = proj / name
             if p.exists():
-                files.append(str(p))
+                out.append(str(p))
             else:
-                self._log(f"  AVISO: no encontrado {name}")
+                self._log(f"  AVISO: {name} no encontrado")
+        return out
 
-        # Archivos extra
-        extras = self.extra_files.get().strip()
-        if extras:
-            for e in extras.split(","):
-                e = e.strip()
-                if e:
-                    files.append(e)
-        return files
+    # ------------------------------------------- Modo 1: Testbench Verilog
 
-    def _compile(self) -> bool:
+    def _compile(self):
+        if self.mode.get() == 2:
+            self._log("Modo cocotb: compilacion es automatica al simular.")
+            return True
+        return self._do_compile()
+
+    def _do_compile(self):
         if not self.iverilog_ok:
-            messagebox.showerror("Error", "iverilog no encontrado en PATH.\n"
-                                 "Instalar desde: https://bleyer.org/icarus/")
+            self._log("ERROR: iverilog no esta en PATH.")
             return False
-
         tb = self.tb_file.get()
         if not tb:
-            messagebox.showerror("Error", "Selecciona un archivo testbench.")
+            self._log("ERROR: seleccionar un testbench .v")
             return False
 
-        proj_dir = Path(self.project_dir.get())
-        out_vvp  = str(proj_dir / "output.vvp")
+        proj = pathlib.Path(self.project_dir.get())
+        out  = str(proj / "output.vvp")
+        cmd  = ["iverilog", "-g2012", "-o", out] + self._get_sources() + [tb]
 
-        src_files = self._get_project_files()
-        src_files.append(tb)
-
-        cmd = ["iverilog", "-g2012", "-o", out_vvp] + src_files
-
-        self._log(f"\n[COMPILAR] {' '.join(cmd)}\n")
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True,
-                                    cwd=str(proj_dir))
-            if result.stdout:
-                self._log(result.stdout)
-            if result.stderr:
-                self._log(result.stderr)
-
-            if result.returncode != 0:
-                self._log("ERROR: compilacion fallida.")
-                return False
-
-            self.vvp_path = out_vvp
-            self._log(f"OK: compilado -> {out_vvp}")
-            return True
-
-        except FileNotFoundError:
-            self._log("ERROR: iverilog no encontrado.")
+        self._log(f"\n[COMPILAR]\n{' '.join(cmd)}\n")
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(proj))
+        if r.stdout: self._log(r.stdout)
+        if r.stderr: self._log(r.stderr)
+        if r.returncode != 0:
+            self._log("FAIL")
             return False
+        self.vvp_path = out
+        self._log(f"OK: {out}")
+        return True
 
-    def _simulate(self) -> bool:
-        if not self.vvp_path or not Path(self.vvp_path).exists():
-            messagebox.showerror("Error", "Compilar primero.")
+    def _simulate(self):
+        if self.mode.get() == 2:
+            return self._run_cocotb()
+        return self._run_vvp()
+
+    def _run_vvp(self):
+        if not self.vvp_path or not pathlib.Path(self.vvp_path).exists():
+            self._log("ERROR: compilar primero.")
             return False
-
-        self._log(f"\n[SIMULAR] vvp {self.vvp_path}\n")
-        try:
-            result = subprocess.run(["vvp", self.vvp_path],
-                                    capture_output=True, text=True,
-                                    cwd=str(Path(self.vvp_path).parent))
-            if result.stdout:
-                self._log(result.stdout)
-            if result.stderr:
-                self._log(result.stderr)
-
-            if result.returncode != 0:
-                self._log("ERROR: simulacion fallida.")
-                return False
-
-            self._log("OK: simulacion terminada.")
-            return True
-
-        except FileNotFoundError:
-            self._log("ERROR: vvp no encontrado.")
+        self._log(f"\n[SIMULAR]\nvvp {self.vvp_path}\n")
+        r = subprocess.run(["vvp", self.vvp_path], capture_output=True, text=True,
+                           cwd=str(pathlib.Path(self.vvp_path).parent))
+        if r.stdout: self._log(r.stdout)
+        if r.stderr: self._log(r.stderr)
+        if r.returncode != 0:
+            self._log("FAIL")
             return False
+        self._log("OK: simulacion terminada.")
+        return True
 
-    def _open_gtkwave(self):
+    def _gtkwave(self):
         if not self.gtkwave_exe:
-            messagebox.showerror(
-                "GTKWave no encontrado",
-                "Descargar GTKWave desde:\n"
-                "https://sourceforge.net/projects/gtkwave/files/\n\n"
-                "Windows: descargar gtkwave64-x.x.x-bin-win64.zip\n"
-                "Extraer y editar GTKWAVE_PATH en sim_gui.py\n"
-                "o agregar la carpeta bin/ al PATH del sistema."
+            self._log(
+                "ERROR: GTKWave no encontrado.\n"
+                "  Windows: https://sourceforge.net/projects/gtkwave/files/\n"
+                "  Linux:   sudo apt install gtkwave\n"
+                "  Luego configurar GTKWAVE_PATH en sim_gui.py"
             )
             return
-
-        # Buscar .vcd en directorio del proyecto
-        proj_dir = Path(self.vvp_path).parent if self.vvp_path else Path(self.project_dir.get())
-        vcd_files = list(proj_dir.glob("*.vcd"))
-
-        if not vcd_files:
-            messagebox.showwarning("Sin VCD",
-                                   "No se encontro archivo .vcd.\n"
-                                   "Ejecutar la simulacion primero.")
+        proj = pathlib.Path(self.project_dir.get())
+        vcds = sorted(proj.glob("*.vcd"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        if not vcds:
+            self._log("ERROR: no hay .vcd. Simular primero.")
             return
-
-        # Usar el .vcd mas reciente
-        vcd = max(vcd_files, key=lambda p: p.stat().st_mtime)
-        self._log(f"\n[GTKWAVE] Abriendo {vcd}\n")
+        vcd = vcds[0]
+        self._log(f"\n[GTKWAVE] {vcd}")
         subprocess.Popen([self.gtkwave_exe, str(vcd)])
 
+    # -------------------------------------------- Modo 2: cocotb sin Make
+
+    def _run_cocotb(self):
+        if not self.cocotb_ok:
+            self._log("ERROR: cocotb no instalado.\n  pip install cocotb")
+            return False
+        if not self.iverilog_ok:
+            self._log("ERROR: iverilog no esta en PATH.")
+            return False
+
+        test_path = pathlib.Path(self.test_file.get())
+        if not test_path.exists():
+            self._log("ERROR: seleccionar un archivo .py")
+            return False
+
+        top = self.top_module.get().strip()
+        if not top:
+            self._log("ERROR: escribir el nombre del Top Module (modulo Verilog DUT)")
+            return False
+
+        self._log(f"\n[COCOTB]\n  DUT:  {top}\n  Test: {test_path}\n")
+        threading.Thread(
+            target=self._cocotb_thread,
+            args=(test_path, top),
+            daemon=True
+        ).start()
+        return True
+
+    def _cocotb_thread(self, test_path, top):
+        """
+        Corre cocotb usando su Python API directamente.
+        Esto es lo mismo que hace Make internamente, pero sin Make.
+
+        Lo que hace cocotb_tools.runner.get_runner("icarus"):
+          1. runner.build():
+               - Escribe un archivo cocotb_iverilog_dump.v con un modulo auxiliar
+               - Llama: iverilog -g2012 -s cocotb_iverilog_dump -o sim.vvp <fuentes>
+          2. runner.test():
+               - Setea las variables de entorno que cocotb necesita:
+                   COCOTB_TOPLEVEL   = nombre del modulo DUT
+                   COCOTB_TEST_MODULES = nombre del modulo Python de tests
+                   LIBPYTHON_LOC     = ruta al .so de Python (para VPI)
+                   PYTHONPATH        = rutas donde buscar el modulo de tests
+               - Llama: vvp -M <libs_dir> -m libcocotbvpi_icarus sim.vvp
+               - El VPI hook carga cocotb, que importa el modulo Python y corre los tests
+        """
+        try:
+            from cocotb_tools.runner import get_runner
+
+            proj      = pathlib.Path(self.project_dir.get())
+            test_dir  = test_path.parent
+            test_mod  = test_path.stem
+            build_dir = proj / "sim_build" / test_mod
+
+            # Fuentes: modulos del proyecto + cualquier .v en el directorio del test
+            sources = [pathlib.Path(f) for f in self._get_sources_silent()]
+            for extra in test_dir.glob("*.v"):
+                if extra not in sources:
+                    sources.append(extra)
+
+            # El directorio del test tiene que estar en PYTHONPATH
+            env = os.environ.copy()
+            pypath = str(test_dir)
+            if env.get("PYTHONPATH"):
+                pypath += os.pathsep + env["PYTHONPATH"]
+            env["PYTHONPATH"] = pypath
+
+            runner = get_runner("icarus")
+
+            self._log_safe(f"Compilando '{top}' con {len(sources)} archivo(s) fuente...")
+            runner.build(
+                verilog_sources=sources,
+                hdl_toplevel=top,
+                build_dir=str(build_dir),
+                always=True,
+                timescale=("1ns", "1ps"),
+                extra_env=env,
+            )
+
+            self._log_safe(f"Ejecutando '{test_mod}'...")
+            runner.test(
+                hdl_toplevel=top,
+                test_module=test_mod,
+                build_dir=str(build_dir),
+                extra_env=env,
+            )
+
+            self._log_safe("\nTests cocotb finalizados.")
+
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else 0
+            if code == 0:
+                self._log_safe("OK: todos los tests pasaron.")
+            else:
+                self._log_safe(f"FAIL: {code} test(s) fallaron.")
+        except Exception as e:
+            self._log_safe(f"ERROR: {e}")
+
+    def _get_sources_silent(self):
+        """Como _get_sources pero sin loggear advertencias (para usar desde hilo)."""
+        proj = pathlib.Path(self.project_dir.get())
+        return [str(proj / n) for n in PROJECT_FILES if (proj / n).exists()]
+
     def _run_all(self):
-        if self._compile():
-            if self._simulate():
-                self._open_gtkwave()
-
-
-def main():
-    root = tk.Tk()
-    app = SimGUI(root)
-    root.mainloop()
+        if self.mode.get() == 1:
+            if self._do_compile():
+                if self._run_vvp():
+                    self._gtkwave()
+        else:
+            self._run_cocotb()
 
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    SimGUI(root)
+    root.mainloop()
