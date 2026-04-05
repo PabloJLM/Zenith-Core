@@ -176,44 +176,46 @@ module cpu_core (
                 // S2 EXECUTE  - rdata2 ya disponible tras DECODE
                 //------------------------------------------------------
                 S2: begin
-                    // ALU-R: alu_b = rs2
-                    // BEQ:   calcular rdata2(BEQ.rs1) - rdata1(BEQ.rs2)
-                    //        alu_a=rdata1=BEQ.rs2, alu_b=rdata2=BEQ.rs1
-                    //        Queremos BEQ.rs1 - BEQ.rs2:
-                    //        Usaremos alu con a=rdata2, b=rdata1.
-                    //        Como alu_a esta fijo a rdata1, hacemos: alu_b=rdata2
-                    //        y el resultado es rdata1 - rdata2. Zero si iguales.
-                    if (f_op == 3'b001 || f_op == 3'b100)
-                        alu_b <= rdata2;
+                    // Preparar operandos correctamente ANTES de usar ALU
 
-                    res_lat <= alu_out;
-                    z_lat   <= alu_z;
-                    st      <= S3;
+                    if (f_op == 3'b001) begin
+                        // ALU-R
+                        alu_b <= rdata2;
+                    end else if (f_op == 3'b100) begin
+                        // BEQ: comparar rs1 y rs2 correctamente
+                        alu_b <= rdata2;
+                    end
+
+                    st <= S3;
                 end
 
                 //------------------------------------------------------
                 // S3 MEMORY - alu_out ahora usa alu_b correcto para R/B
                 //------------------------------------------------------
                 S3: begin
-                    // recapturar resultado con alu_b actualizado (valido este ciclo)
-                    if (f_op == 3'b001 || f_op == 3'b100) begin
-                        res_lat <= alu_out;
-                        z_lat   <= alu_z;
-                    end
+                    // Ahora sí ALU tiene operandos correctos
+                    res_lat <= alu_out;
+                    z_lat   <= alu_z;
 
                     case (f_op)
                         3'b010: begin   // LOAD
                             mem_addr <= res_lat;
                             mem_re   <= 1'b1;
                         end
+
                         3'b011: begin   // STORE
                             mem_addr  <= res_lat;
-                            mem_wdata <= rdata2;    // dato = regfile[f_rd]
+                            mem_wdata <= rdata2;
                             mem_we    <= 1'b1;
                         end
-                        3'b110: gpio_out <= rdata1; // OUT rs1=[9:7]
+
+                        3'b110: begin   // OUT
+                            gpio_out <= rdata1;
+                        end
+
                         default: ;
                     endcase
+
                     st <= S4;
                 end
 

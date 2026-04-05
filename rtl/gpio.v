@@ -33,7 +33,7 @@ module gpio_8bit (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             gpio_out <= 8'h00;
-            gpio_dir <= 8'h00;  // todos como input por defecto
+            gpio_dir <= 8'hFF;  // todos como output por defecto
         end else if (mmio_we) begin
             case (mmio_addr)
                 ADDR_OUT: gpio_out <= mmio_data_in;
