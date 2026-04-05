@@ -1,85 +1,431 @@
-# Documentación Técnica de Módulos
+# Documentación 
+
+Primer microcontrolador de 8 bits basado en RISC-V diseñado en Guatemala.
+Arquitectura: subset RISC-V de 16 bits, 8 registros, datos de 8 bits, periféricos MMIO.
 
 ---
 
 ## Índice
 
-1. `alu.v` — Unidad Aritmético-Lógica
-2. `regfile.v` — Banco de Registros
-3. `cpu_core.v` — Núcleo del CPU
-4. `instruction_memory.v` — Memoria de Instrucciones
-5. `data_memory.v` — Memoria de Datos y Decodificador MMIO
-6. `gpio.v` — GPIO 8 bits
-7. `uart.v` — UART TX + RX + Wrapper MMIO
-8. `pwm.v` — PWM 8 bits
-9. `uart_loader.v` — Cargador de Programas vía UART
-10. `microrv8_system.v` — Sistema Completo (Top Level)
-11. `tang_nano_top.v` — Wrapper Tang Nano 9K
-12. `tang_nano_9k.cst` — Restricciones de Pines
-13. `assembler.py` — Ensamblador de Dos Pasadas
-14. `sim_gui.py` — GUI de Simulación
-15. `uart_flash.py` — Herramienta de Carga vía UART
+**Sistema**
+1. Arquitectura general
+2. Mapa de memoria
+
+**ISA y programación**
+3. Registros
+4. Formato de instrucción
+5. Tabla de instrucciones
+6. Guía de programación en assembly
+
+**Módulos RTL**
+7. `alu.v`
+8. `regfile.v`
+9. `cpu_core.v`
+10. `instruction_memory.v`
+11. `data_memory.v`
+12. `gpio.v`
+13. `uart.v`
+14. `pwm.v`
+15. `uart_loader.v`
+16. `microrv8_system.v`
+17. `tang_nano_top.v`
+18. `tang_nano_9k.cst`
+
+**Herramientas**
+19. `assembler.py`
+20. `sim_gui.py`
+21. `uart_flash.py`
+
+**Referencia**
+22. Árbol de dependencias
+23. Señales de debug
+24. Flujo de síntesis en Gowin EDA
+25. Extensiones futuras
 
 ---
 
-## 1. `alu.v` — Unidad Aritmético-Lógica
+## 1. Arquitectura general
+
+### Diagrama de bloques
+![fs2](imgs/microxd.png)
+
+### Números clave
+
+```
+Clock (Tang Nano 9K)    27 MHz
+Instrucciones/segundo   5,400,000  (5 ciclos por instrucción)
+Registros               8 (r0-r7, r0 hardwired zero)
+Ancho de datos          8 bits
+Ancho de instrucción    16 bits
+Memoria de programa     512 instrucciones (1 KB)
+Memoria de datos        128 bytes RAM + 128 bytes MMIO
+Uso LUTs FPGA           ~800-1200 de 8640 disponibles
+Uso BRAM FPGA           1 bloque de 9K (instruction_memory)
+```
+
+---
+
+## 2. Mapa de memoria
+
+```
+Dirección   Acceso   Periférico     Descripción
+──────────  ───────  ────────────   ─────────────────────────────────────────────
+0x00-0x1F   R/W      RAM            Zona de stack sugerida (32 bytes)
+0x20-0x7F   R/W      RAM            Variables de usuario (96 bytes)
+
+0x80        W        GPIO_OUT       Escribir en pines de salida
+0x81        R        GPIO_IN        Leer pines de entrada
+0x82        W        GPIO_DIR       Dirección bit a bit: 0=input, 1=output
+
+0x83        W        UART_TX        Byte a transmitir (ignorado si tx_busy=1)
+0x84        R        UART_STAT      bit0 = tx_busy
+
+0x85        W        PWM_DUTY       Duty cycle 0-255
+0x86        W        PWM_CTRL       bit0=enable, bit1=invert polaridad
+0x87        W        PWM_PRE        Prescaler 1-255 (default=105 → ~1kHz@27MHz)
+
+0x88-0xFF   —        Reservado      Para extensiones futuras
+```
+
+### Acceder al mapa de memoria desde assembly
+
+Las instrucciones LOAD/STORE usan `rs1 + imm4` como dirección. El imm4 tiene 4 bits con signo (rango -8 a +7), así que las direcciones MMIO (≥ 0x80) hay que construirlas en un registro primero:
+
+```asm
+; Construir 0x80 en r6 (operación inicial, hacer una sola vez)
+ADDI r5, r0, 8          ; r5 = 8
+ADDI r4, r0, 4          ; r4 = 4  (shift amount)
+SLL  r6, r5, r4         ; r6 = 8 << 4 = 128 = 0x80
+
+; Acceder a los periféricos usando r6 como base
+STORE r1, r6, 0         ; GPIO_OUT   (0x80 + 0 = 0x80)
+LOAD  r2, r6, 1         ; GPIO_IN    (0x80 + 1 = 0x81)
+STORE r1, r6, 3         ; UART_TX    (0x80 + 3 = 0x83)
+LOAD  r3, r6, 4         ; UART_STAT  (0x80 + 4 = 0x84)
+STORE r1, r6, 5         ; PWM_DUTY   (0x80 + 5 = 0x85)
+```
+
+---
+
+## 3. Registros
+
+```
+Registro   ABI Name   Descripción y convención de uso
+────────   ────────   ────────────────────────────────────────────────────────
+r0         zero       Hardwired 0. Leer siempre da 0. Escribir no tiene efecto.
+r1         t0         Contador principal / argumento 1 / primer temporal
+r2         t1         Variable secundaria / contador de delay loops
+r3         t2         Tercer temporal o constante de comparación
+r4         t3         Resultado de comparaciones (SLT, SLTI, flags)
+r5         t4         Constante auxiliar (ej: 8 para construir valores MMIO)
+r6         s0         Base de dirección MMIO (guarda 0x80 y se mantiene)
+r7         ra         Return address — JAL escribe aquí automáticamente
+```
+
+### Por qué r0 es hardwired zero
+
+En RISC-V clásico, `x0` siempre es cero. Esto simplifica el ISA: no se necesita instrucción `MOV`, basta con `ADD rd, rs, x0`. No se necesita `CLEAR`, basta con `ADD rd, x0, x0`. El comparador de BEQ se hace con `SUB` y se compara contra `r0`. Se elimina el caso especial de registros sin fuente de cero.
+
+---
+
+## 4. Formato de instrucción (16 bits)
+
+Todas las instrucciones tienen exactamente 16 bits. Los campos varían según el tipo.
+
+```
+Tipo I  (ALU inmediato)   opcode=000
+  [15:13] opcode  [12:10] rd  [9:7] rs1  [6:4] funct3  [3:0] imm4
+  rd = rs1 OP sign_ext(imm4)
+
+Tipo R  (ALU registro)    opcode=001
+  [15:13] opcode  [12:10] rd  [9:7] rs1  [6:4] rs2  [3:1] funct3  [0] 0
+  rd = rs1 OP rs2
+
+Tipo L  (LOAD)            opcode=010
+  [15:13] opcode  [12:10] rd  [9:7] rs1  [6:4] 000  [3:0] imm4
+  rd = MEM[rs1 + sign_ext(imm4)]
+
+Tipo S  (STORE)           opcode=011
+  [15:13] opcode  [12:10] rs2  [9:7] rs1  [6:4] 000  [3:0] imm4
+  MEM[rs1 + sign_ext(imm4)] = rs2
+
+Tipo B  (BEQ)             opcode=100
+  [15:13] opcode  [12:10] rs1  [9:7] rs2  [6:4] 000  [3:0] imm4
+  if rs1==rs2: PC += sign_ext(imm4)
+
+Tipo J  (JUMP / JAL)      opcode=111 / 101
+  [15:13] opcode  [12:10] rd  [9:0] target10
+  PC = target10        (JUMP)
+  rd = PC+1; PC = target10  (JAL)
+
+Tipo O  (OUT GPIO)        opcode=110
+  [15:13] opcode  [12:10] 000  [9:7] rs1  [6:0] 0
+  gpio_out = rs1
+```
+
+### Extensión de signo del inmediato
+
+```
+imm4     Decimal   8 bits extendido
+0000      0         0x00
+0001      1         0x01
+0111      7         0x07
+1000     -8         0xF8
+1111     -1         0xFF
+
+Rango útil: -8 a +7
+```
+
+### Cálculo del offset para BEQ
+
+```
+offset = dirección_destino - (PC_de_la_instrucción_BEQ + 1)
+
+Ejemplo: BEQ en addr 7, quiero saltar a addr 5
+  offset = 5 - (7 + 1) = -3  →  imm4 = 1101 (0xD en hex)
+
+Rango: -8 a +7 instrucciones relativas
+Para saltos más largos: usar JUMP (destino absoluto de 9 bits)
+```
+
+---
+
+## 5. Tabla de instrucciones
+
+### Códigos funct3 para ALU
+
+```
+funct3   Operación   Tipo I mnemónico   Tipo R mnemónico
+──────   ─────────   ────────────────   ────────────────
+000      ADD         ADDI               ADD
+001      SUB         SUBI               SUB
+010      AND         ANDI               AND
+011      OR          ORI                OR
+100      XOR         XORI               XOR
+101      SLL         SLLI               SLL
+110      SRL         SRLI               SRL
+111      SLT         SLTI               SLT
+```
+
+### Instrucciones completas
+
+```
+Mnemónico  Tipo   Opcode  funct3  Sintaxis assembly         Operación
+─────────  ─────  ──────  ──────  ───────────────────────   ──────────────────────────────
+ADDI       I      000     000     ADDI rd, rs1, imm         rd = rs1 + sign_ext(imm)
+SUBI       I      000     001     SUBI rd, rs1, imm         rd = rs1 - sign_ext(imm)
+ANDI       I      000     010     ANDI rd, rs1, imm         rd = rs1 & sign_ext(imm)
+ORI        I      000     011     ORI  rd, rs1, imm         rd = rs1 | sign_ext(imm)
+XORI       I      000     100     XORI rd, rs1, imm         rd = rs1 ^ sign_ext(imm)
+SLLI       I      000     101     SLLI rd, rs1, imm         rd = rs1 << imm
+SRLI       I      000     110     SRLI rd, rs1, imm         rd = rs1 >> imm
+SLTI       I      000     111     SLTI rd, rs1, imm         rd = (rs1 < imm) ? 1 : 0
+
+ADD        R      001     000     ADD  rd, rs1, rs2         rd = rs1 + rs2
+SUB        R      001     001     SUB  rd, rs1, rs2         rd = rs1 - rs2
+AND        R      001     010     AND  rd, rs1, rs2         rd = rs1 & rs2
+OR         R      001     011     OR   rd, rs1, rs2         rd = rs1 | rs2
+XOR        R      001     100     XOR  rd, rs1, rs2         rd = rs1 ^ rs2
+SLL        R      001     101     SLL  rd, rs1, rs2         rd = rs1 << rs2[2:0]
+SRL        R      001     110     SRL  rd, rs1, rs2         rd = rs1 >> rs2[2:0]
+SLT        R      001     111     SLT  rd, rs1, rs2         rd = (rs1 < rs2) ? 1 : 0
+
+LOAD       L      010     —       LOAD rd, rs1, imm         rd = MEM[rs1 + imm]
+STORE      S      011     —       STORE rs2, rs1, imm       MEM[rs1 + imm] = rs2
+
+BEQ        B      100     —       BEQ  rs1, rs2, label      if rs1==rs2: PC += imm
+JUMP       J      111     —       JUMP label                PC = target (9 bits, absoluto)
+JAL        J      101     —       JAL  rd, label            rd = PC+1; PC = target
+
+OUT        O      110     —       OUT  rs1                  gpio_out = rs1
+
+NOP        P      —       —       NOP                       ADDI r0, r0, 0  (sin efecto)
+MOV        P      —       —       MOV  rd, rs               ADD rd, rs, r0
+```
+
+### Limitaciones del ISA actual
+
+```
+BEQ offset       Solo -8 a +7 instrucciones relativas. Saltos más largos: usar JUMP.
+JUMP/JAL         Destino absoluto en 9 bits (0-511). No existe JALR (salto a registro).
+Retorno          JAL guarda PC+1 en rd, pero JUMP necesita destino fijo. El retorno
+                 dinámico (a cualquier caller) no es posible sin tabla de saltos.
+Branches         Solo BEQ. No existe BNE, BLT, BGE. Workarounds con SLT + BEQ.
+Inmediato > 7    Hay que construirlo con SLL y sumas.
+Interrupciones   El timer IRQ existe en hardware pero no está conectado al CPU.
+```
+
+---
+
+## 6. Guía de programación en assembly
+
+### Estructura básica de un programa
+
+```asm
+; Comentarios con punto y coma
+; Los labels terminan con dos puntos
+
+    ; Inicialización (sin label, se ejecuta solo una vez)
+    ADDI r1, r0, 0          ; r1 = 0  (contador)
+
+main:
+    ADDI r1, r1, 1          ; r1++
+    OUT  r1                 ; gpio_out = r1  (ver en LEDs)
+    JUMP main               ; loop infinito
+```
+
+### Construir valores mayores que 7
+
+```asm
+; Construir 0x80 = 128 en r6
+ADDI r5, r0, 8              ; r5 = 8
+ADDI r4, r0, 4              ; r4 = 4
+SLL  r6, r5, r4             ; r6 = 8 << 4 = 128 = 0x80
+
+; Derivar otras direcciones MMIO desde r6
+ADDI r3, r6, 3              ; r3 = 0x83  (UART_TX)
+ADDI r4, r6, 6              ; r4 = 0x86  (PWM_CTRL)
+
+; Construir 65 = 'A' en r1
+ADDI r5, r0, 8
+ADDI r4, r0, 3
+SLL  r1, r5, r4             ; r1 = 64
+ADDI r1, r1, 1              ; r1 = 65
+
+; Construir -1 = 255 en r1
+ADDI r1, r0, -1             ; 0xFF en complemento a 2 de 8 bits
+```
+
+### Delay con contador
+
+```asm
+    ADDI r2, r0, 15         ; r2 = número de iteraciones
+delay_loop:
+    ADDI r2, r2, -1         ; r2--
+    BEQ  r2, r0, delay_done ; si r2 == 0, salir
+    JUMP delay_loop
+delay_done:
+```
+
+### GPIO
+
+```asm
+    ; Configurar todos los pines como salida
+    ADDI r1, r0, -1         ; r1 = 0xFF
+    STORE r1, r6, 2         ; GPIO_DIR = 0xFF  (0x80+2)
+
+    ; Escribir al GPIO
+    ADDI r1, r0, 5
+    STORE r1, r6, 0         ; GPIO_OUT = 5  (0x80+0)
+
+    ; Leer del GPIO
+    LOAD r2, r6, 1          ; r2 = GPIO_IN  (0x80+1)
+```
+
+### UART
+
+```asm
+    ; r1 = byte a enviar
+uart_esperar:
+    LOAD  r4, r6, 4         ; r4 = UART_STAT  (0x80+4)
+    ANDI  r4, r4, 1         ; r4 = bit busy
+    BEQ   r4, r0, uart_ok   ; si busy==0, enviar
+    JUMP  uart_esperar
+uart_ok:
+    STORE r1, r6, 3         ; UART_TX = r1  (0x80+3)
+```
+
+### PWM
+
+```asm
+    ; Habilitar PWM
+    ADDI r1, r0, 1
+    STORE r1, r6, 6         ; PWM_CTRL = 1  (0x80+6, enable)
+
+    ; Duty cycle 50%: construir 128 = 0x80
+    ADDI r5, r0, 8
+    ADDI r4, r0, 4
+    SLL  r1, r5, r4         ; r1 = 128
+    STORE r1, r6, 5         ; PWM_DUTY = 128  (0x80+5)
+```
+
+### Detección de condiciones sin BNE
+
+```asm
+    ; if r1 != r2: hacer algo
+    SUB  r4, r1, r2         ; r4 = r1 - r2
+    BEQ  r4, r0, son_iguales
+    ; aquí r1 != r2
+son_iguales:
+
+    ; if r1 > r2: hacer algo
+    SLT  r4, r2, r1         ; r4 = (r2 < r1) = (r1 > r2) ? 1 : 0
+    BEQ  r4, r0, no_mayor   ; si r4==0, no es mayor
+    ; aquí r1 > r2
+no_mayor:
+```
+
+### Subrutinas con JAL
+
+```asm
+main:
+    ADDI r1, r0, 5
+    JAL  r7, duplicar       ; r7 = addr retorno, saltar
+    ; r1 = 10 aquí
+    JUMP main
+
+duplicar:
+    ADD r1, r1, r1          ; r1 = r1 * 2
+    JUMP main               ; retornar (dirección hardcodeada)
+    ; Limitación: si hay múltiples callers, necesitar tabla de saltos
+```
+
+---
+
+## 7. `alu.v` — Unidad Aritmético-Lógica
 
 ### Función
 
-Realiza operaciones aritméticas y lógicas sobre dos operandos de 8 bits. Es un bloque puramente combinacional: no tiene registros, produce el resultado en el mismo ciclo en que recibe las entradas.
+Realiza las 8 operaciones aritméticas y lógicas del ISA. Completamente combinacional: sin registros internos, el resultado está disponible en el mismo ciclo en que llegan las entradas.
 
 ### Interfaz
 
 ```verilog
 module alu_8bit (
-    input  wire [7:0] a,           // Operando A (viene de rs1 del regfile)
-    input  wire [7:0] b,           // Operando B (viene de rs2 o inmediato)
-    input  wire [2:0] op,          // Código de operación (funct3)
-    output reg  [7:0] result,      // Resultado de 8 bits
-    output wire       zero,        // 1 si result == 0
-    output wire       carry,       // 1 si hubo carry (desbordamiento sin signo)
-    output wire       negative     // 1 si bit 7 del resultado es 1
+    input  wire [7:0] a,        // Operando A (de rs1 del regfile)
+    input  wire [7:0] b,        // Operando B (de rs2 o inmediato)
+    input  wire [2:0] op,       // Código de operación (funct3)
+    output reg  [7:0] result,   // Resultado de 8 bits
+    output wire       zero,     // 1 si result == 0
+    output wire       carry,    // 1 si hubo carry sin signo
+    output wire       negative  // 1 si bit 7 del resultado es 1
 );
-```
-
-### Tabla de operaciones
-
-```
-op [2:0]  Operación  Descripción
-────────  ─────────  ─────────────────────────────
-000       ADD        result = a + b
-001       SUB        result = a - b
-010       AND        result = a & b
-011       OR         result = a | b
-100       XOR        result = a ^ b
-101       SLL        result = a << b[2:0]
-110       SRL        result = a >> b[2:0]
-111       SLT        result = (a < b) ? 1 : 0 (sin signo)
 ```
 
 ### Implementación del carry
 
-Se usa un registro interno de 9 bits para capturar el bit de acarreo:
+Para capturar el acarreo sin perderlo se usa un resultado interno de 9 bits:
 
 ```verilog
 reg [8:0] result_ext;
 // Para ADD: result_ext = {1'b0, a} + {1'b0, b}
-// carry = result_ext[8]
+// carry    = result_ext[8]
+// result   = result_ext[7:0]
 ```
 
 ### Notas de diseño
 
-- `SLT` usa comparación sin signo. Para comparación con signo habría que extender la ALU.
-- El flag `negative` es simplemente `result[7]` (bit de signo en representación en complemento a 2).
-- Los flags `carry` y `negative` están disponibles en el CPU pero actualmente solo `zero` es usado por `BEQ`.
+`SLT` compara sin signo. `a=0xFF, b=0x01` → `SLT = 0` porque 255 > 1 sin signo. Para comparación con signo habría que inspeccionar el flag `negative` de SUB.
+
+Los flags `carry` y `negative` están disponibles como salidas del módulo pero el CPU actual solo usa `zero` (para BEQ). Están preparados para extensiones con BLT, BGE, etc.
 
 ---
 
-## 2. `regfile.v` — Banco de Registros
+## 8. `regfile.v` — Banco de Registros
 
 ### Función
 
-Almacena los 8 registros de propósito general del CPU (r0-r7). Proporciona dos puertos de lectura simultánea (combinacional) y un puerto de escritura síncrona.
+Almacena los 8 registros de propósito general. Dos puertos de lectura simultánea combinacionales (sin latencia de clock) y un puerto de escritura síncrona.
 
 ### Interfaz
 
@@ -87,43 +433,41 @@ Almacena los 8 registros de propósito general del CPU (r0-r7). Proporciona dos 
 module regfile (
     input  wire       clk,
     input  wire       rst_n,
-    input  wire [2:0] rs1_addr,   // Dirección de lectura A
-    output wire [7:0] rs1_data,   // Dato leído del puerto A
-    input  wire [2:0] rs2_addr,   // Dirección de lectura B
-    output wire [7:0] rs2_data,   // Dato leído del puerto B
-    input  wire [2:0] rd_addr,    // Dirección de escritura
-    input  wire [7:0] rd_data,    // Dato a escribir
-    input  wire       rd_we       // Write enable (activo alto)
+    input  wire [2:0] rs1_addr,
+    output wire [7:0] rs1_data,
+    input  wire [2:0] rs2_addr,
+    output wire [7:0] rs2_data,
+    input  wire [2:0] rd_addr,
+    input  wire [7:0] rd_data,
+    input  wire       rd_we
 );
 ```
 
 ### Comportamiento
 
-**Lectura:** combinacional (sin latencia de clock).
+Lectura combinacional: las salidas cambian inmediatamente al cambiar las direcciones.
+
 ```verilog
 assign rs1_data = (rs1_addr == 3'd0) ? 8'h00 : regs[rs1_addr];
 assign rs2_data = (rs2_addr == 3'd0) ? 8'h00 : regs[rs2_addr];
 ```
 
-**Escritura:** síncrona, en flanco positivo del clock.
+Escritura síncrona, ignorando r0:
+
 ```verilog
 if (rd_we && rd_addr != 3'd0)
     regs[rd_addr] <= rd_data;
 ```
 
-**r0 es hardwired zero:** leer r0 siempre devuelve 0. Escribir a r0 no tiene efecto. Esto replica el comportamiento del ISA RISC-V.
-
-### Reset
-
-En `negedge rst_n`, todos los registros se ponen a cero.
+En reset activo bajo, todos los registros vuelven a 0.
 
 ---
 
-## 3. `cpu_core.v` — Núcleo del CPU
+## 9. `cpu_core.v` — Núcleo del CPU
 
 ### Función
 
-Implementa el ciclo de fetch-decode-execute de la ISA MicroRV8-GT. Conecta el ALU, el register file, y controla las interfaces con la memoria de instrucciones y datos.
+Orquesta el ALU, el register file y los buses de instrucciones y datos. Implementa el ciclo fetch-decode-execute mediante una FSM de 5 estados.
 
 ### Interfaz
 
@@ -132,21 +476,17 @@ module cpu_core (
     input  wire        clk,
     input  wire        rst_n,
 
-    // Instruction memory (combinacional)
-    output wire [8:0]  pc_out,         // PC actual → instruction_memory
-    input  wire [15:0] instruction_in, // Instrucción desde instruction_memory
+    output wire [8:0]  pc_out,          // PC → instruction_memory
+    input  wire [15:0] instruction_in,  // instrucción desde imem (combinacional)
 
-    // Data memory
-    output reg  [7:0]  mem_addr,       // Dirección de acceso a datos
-    output reg  [7:0]  mem_wdata,      // Dato a escribir (STORE)
-    input  wire [7:0]  mem_rdata,      // Dato leído (LOAD)
-    output reg         mem_we,         // Write enable (1 ciclo)
-    output reg         mem_re,         // Read enable (1 ciclo)
+    output reg  [7:0]  mem_addr,        // dirección de datos
+    output reg  [7:0]  mem_wdata,       // dato para STORE
+    input  wire [7:0]  mem_rdata,       // dato de LOAD
+    output reg         mem_we,          // write enable (1 ciclo)
+    output reg         mem_re,          // read enable  (1 ciclo)
 
-    // GPIO directo (instrucción OUT)
-    output reg  [7:0]  gpio_out,       // Salida directa al OR con gpio_8bit
+    output reg  [7:0]  gpio_out,        // instrucción OUT
 
-    // Debug
     output wire [7:0]  debug_pc,
     output wire [7:0]  debug_state,
     output wire [15:0] debug_instr
@@ -155,141 +495,121 @@ module cpu_core (
 
 ### FSM de 5 estados
 
+Cada instrucción toma exactamente 5 ciclos de clock.
+
 ```
-Estado         Código  Duración  Descripción
-─────────────  ──────  ────────  ──────────────────────────────────────────
-S_FETCH        3'd0    1 ciclo   IR ← instruction_in (combinacional, ya válido)
-S_DECODE       3'd1    1 ciclo   Lee registros, configura ALU (alu_a, alu_b, alu_op)
-S_EXECUTE      3'd2    1 ciclo   ALU opera, captura resultado en alu_res y alu_z
-S_MEMORY       3'd3    1 ciclo   Accede a datos o actualiza GPIO
-S_WRITEBACK    3'd4    1 ciclo   Escribe resultado, actualiza PC
+Estado        Código   Duración   Qué ocurre
+────────────  ──────   ────────   ──────────────────────────────────────────────
+S_FETCH       3'd0     1 ciclo    IR ← instruction_in  (ya válido, imem combina.)
+S_DECODE      3'd1     1 ciclo    Lee rs1/rs2 del regfile, configura alu_a/b/op
+S_EXECUTE     3'd2     1 ciclo    ALU opera, captura resultado (alu_res, alu_z)
+S_MEMORY      3'd3     1 ciclo    Accede a RAM o actualiza gpio_out (instruc. OUT)
+S_WRITEBACK   3'd4     1 ciclo    Escribe rd_wdata en regfile, actualiza PC
 ```
 
 ### Decodificación de campos del IR
 
 ```verilog
 wire [2:0] opcode = ir[15:13];
-wire [2:0] f_rd   = ir[12:10];   // rd o rs1 (BRANCH/STORE)
-wire [2:0] f_rs1  = ir[9:7];     // rs1
-wire [2:0] f_rs2  = ir[6:4];     // rs2 (R-type) o funct3 (I-type)
-wire [2:0] f_fn3r = ir[3:1];     // funct3 (R-type)
-wire [3:0] f_imm4 = ir[3:0];     // inmediato 4 bits
-wire [7:0] imm_se = {{4{f_imm4[3]}}, f_imm4};  // extendido a 8 bits con signo
+wire [2:0] f_rd   = ir[12:10];   // destino / rs1 en BEQ / rs2 en STORE
+wire [2:0] f_rs1  = ir[9:7];     // fuente A
+wire [2:0] f_rs2  = ir[6:4];     // fuente B (R) o funct3 (I)
+wire [2:0] f_fn3r = ir[3:1];     // funct3 para R-type
+wire [3:0] f_imm4 = ir[3:0];
+wire [7:0] imm_se = {{4{f_imm4[3]}}, f_imm4};   // sign-extend a 8 bits
 ```
 
 ### Mux de puertos del register file
 
-Según el tipo de instrucción, los puertos de lectura A y B del register file se redirigen:
+El regfile tiene dos puertos de lectura. El CPU los redirige según el tipo de instrucción:
 
 ```
-Instrucción  ra_addr (puerto A)  rb_addr (puerto B)
-───────────  ──────────────────  ──────────────────
-Tipo I/R/L   f_rs1               f_rs2
-STORE        f_rs1 (base)        f_rd  (dato a guardar)
-BEQ          f_rd  (rs1)         f_rs1 (rs2)
+Instrucción   Puerto A (ra_addr)    Puerto B (rb_addr)
+───────────   ──────────────────    ──────────────────
+I / R / L     f_rs1                 f_rs2
+STORE         f_rs1 (base)          f_rd  (dato a escribir)
+BEQ           f_rd  (primer op)     f_rs1 (segundo op)
 ```
 
-### Comportamiento por opcode en cada estado
+### Comportamiento por estado y opcode
 
-**S_DECODE:**
+**S_DECODE — configurar ALU:**
 
-| Opcode | alu_a     | alu_b   | alu_op  | Observación                 |
-|--------|-----------|---------|---------|----------------------------|
-| 000    | ra_data   | imm_se  | f_rs2   | funct3 en campo rs2         |
-| 001    | ra_data   | rb_data | f_fn3r  | funct3 en bits [3:1]        |
-| 010    | ra_data   | imm_se  | ADD     | calcular dirección LOAD     |
-| 011    | ra_data   | imm_se  | ADD     | calcular dirección STORE    |
-| 100    | ra_data   | rb_data | SUB     | comparar para BEQ           |
-| 110    | ra_data   | 0       | ADD     | guardar rs1 para OUT        |
+| Opcode | alu_a   | alu_b   | alu_op         |
+|--------|---------|---------|----------------|
+| 000 I  | rs1     | imm_se  | f_rs2 (funct3) |
+| 001 R  | rs1     | rs2     | f_fn3r (funct3)|
+| 010 L  | rs1     | imm_se  | ADD (dirección)|
+| 011 S  | rs1     | imm_se  | ADD (dirección)|
+| 100 B  | rs1*    | rs2*    | SUB (comparar) |
+| 110 O  | rs1     | 0       | ADD (guardar)  |
+
+*BEQ: rs1 llega via f_rd, rs2 via f_rs1 (mux del regfile).
 
 **S_MEMORY:**
 
-| Opcode | Acción                                      |
-|--------|---------------------------------------------|
-| 010    | mem_addr ← alu_res; mem_re ← 1             |
-| 011    | mem_addr ← alu_res; mem_wdata ← store_dat; mem_we ← 1 |
-| 110    | gpio_out ← alu_a (valor de rs1)             |
+| Opcode | Acción |
+|--------|--------|
+| 010 L  | `mem_addr = alu_res; mem_re = 1` |
+| 011 S  | `mem_addr = alu_res; mem_wdata = store_dat; mem_we = 1` |
+| 110 O  | `gpio_out = alu_a` (rs1 capturado en DECODE) |
 
 **S_WRITEBACK:**
 
-| Opcode | rd_wdata      | PC siguiente                        |
-|--------|---------------|-------------------------------------|
-| 000    | alu_res       | pc + 1                              |
-| 001    | alu_res       | pc + 1                              |
-| 010    | mem_rdata     | pc + 1                              |
-| 011    | —             | pc + 1                              |
-| 100    | —             | pc + imm (si alu_z) / pc + 1        |
-| 101    | pc_lat[7:0]+1 | ir[8:0] (9 bits de target)          |
-| 110    | —             | pc + 1                              |
-| 111    | —             | ir[8:0] (9 bits de target)          |
-
-### Restricciones conocidas del ISA actual
-
-- `BEQ` tiene rango de offset de 4 bits: máximo ±8 instrucciones relativas.
-- `JUMP` y `JAL` tienen destino absoluto de 9 bits (512 posiciones). No existe JALR (retorno dinámico).
-- No hay manejo de interrupciones en el CPU (el timer IRQ existe pero no está conectado).
-- Un solo tipo de branch: `BEQ`. No existe `BNE`, `BLT`, etc.
+| Opcode | Escribe en rd       | PC siguiente              |
+|--------|---------------------|---------------------------|
+| 000 I  | alu_res             | PC + 1                    |
+| 001 R  | alu_res             | PC + 1                    |
+| 010 L  | mem_rdata           | PC + 1                    |
+| 011 S  | —                   | PC + 1                    |
+| 100 B  | —                   | PC + imm si zero / PC + 1 |
+| 101 J  | pc_lat[7:0] + 1     | ir[8:0] (target)          |
+| 110 O  | —                   | PC + 1                    |
+| 111 J  | —                   | ir[8:0] (target)          |
 
 ---
 
-## 4. `instruction_memory.v` — Memoria de Instrucciones
+## 10. `instruction_memory.v` — Memoria de Instrucciones
 
 ### Función
 
-ROM/RAM de 512 palabras × 16 bits que almacena el programa del CPU. Tiene dos puertos independientes: lectura combinacional para el CPU y escritura síncrona para el `uart_loader`.
+ROM de 512 × 16 bits. Puerto de lectura combinacional para el CPU y puerto de escritura síncrona para el `uart_loader`.
 
 ### Interfaz
 
 ```verilog
 module instruction_memory (
     input  wire        clk,
-    input  wire [8:0]  addr,       // Dirección CPU (combinacional)
-    output wire [15:0] data_out,   // Instrucción al CPU
-    input  wire [8:0]  wr_addr,    // Dirección escritura loader
-    input  wire [15:0] wr_data,    // Dato a escribir
-    input  wire        wr_en       // Habilitador de escritura
+    input  wire [8:0]  addr,       // PC del CPU → lectura combinacional
+    output wire [15:0] data_out,   // instrucción
+    input  wire [8:0]  wr_addr,    // escritura desde loader
+    input  wire [15:0] wr_data,
+    input  wire        wr_en
 );
 ```
 
-### Lectura combinacional
+### Por qué la lectura es combinacional
 
-```verilog
-assign data_out = rom[addr];
-```
+Si fuera síncrona, el CPU necesitaría un ciclo extra de espera por instrucción, complicando la FSM. Al ser combinacional, la instrucción está disponible en el mismo ciclo en que el PC es válido. En síntesis Gowin, 512 × 16 = 8 Kbits caben en un bloque BRAM de 9K.
 
-Esto permite que el CPU reciba la instrucción en el mismo ciclo en que presenta el PC (sin latencia de un ciclo de clock). En síntesis, Gowin puede inferir esto como BRAM con output registrado si el timing lo permite; de lo contrario usa LUTs distribuidas.
+### Cargar programas
 
-### Escritura síncrona (uart_loader)
-
-```verilog
-always @(posedge clk)
-    if (wr_en) rom[wr_addr] <= wr_data;
-```
-
-Durante la carga, el CPU está en reset (señal `loader_loading` en el sistema), así que no hay conflicto de lectura/escritura simultánea.
-
-### Carga del programa
-
-**Durante síntesis (programa fijo):** editar el bloque `initial` en el archivo con las instrucciones en binario o usar `$readmemh`.
-
-**En simulación con programa externo:**
 ```bash
-iverilog -g2012 -DPROGRAM_HEX='"mi_programa.hex"' -o sim.vvp ...
+# En simulación con archivo externo
+iverilog -g2012 -DPROGRAM_HEX='"prog.hex"' -o sim.vvp *.v testbench.v
+
+# En caliente a la FPGA (sin resintetizar)
+python3 assembler.py prog.asm --binary -o prog.bin
+python3 uart_flash.py prog.bin --port COM3
 ```
-
-**En caliente via UART:** usar `uart_flash.py` con el `.bin` generado por el assembler.
-
-### Tamaño y uso de BRAM
-
-512 palabras × 16 bits = 8,192 bits = 8 Kbits → cabe exactamente en un bloque BRAM de 9K de la Tang Nano 9K.
 
 ---
 
-## 5. `data_memory.v` — Memoria de Datos y Decodificador MMIO
+## 11. `data_memory.v` — Memoria de Datos y Decodificador MMIO
 
 ### Función
 
-Implementa la memoria de datos del CPU y el decodificador que separa accesos a RAM de accesos a periféricos MMIO. Las direcciones 0x00-0x7F van a RAM física; las 0x80-0xFF se redirigen al bus MMIO.
+RAM de 128 bytes para variables de usuario. Detecta si el acceso va a RAM (0x00-0x7F) o a periféricos MMIO (0x80-0xFF) y genera las señales correspondientes.
 
 ### Interfaz
 
@@ -300,11 +620,9 @@ module data_memory (
     input  wire [7:0]  data_in,
     input  wire        we, re,
     output reg  [7:0]  data_out,
-
-    // Bus MMIO hacia periféricos
     output reg  [7:0]  mmio_addr,
     output reg  [7:0]  mmio_data_wr,
-    input  wire [7:0]  mmio_data_rd,
+    input  wire [7:0]  mmio_data_rd,   // respuesta del periférico (muxeada en system)
     output reg         mmio_we,
     output reg         mmio_re
 );
@@ -313,30 +631,22 @@ module data_memory (
 ### Decodificación
 
 ```verilog
-wire is_mmio = addr[7];   // bit 7 = 1 → MMIO (0x80-0xFF)
+wire is_mmio = addr[7];   // bit 7 = 1 → 0x80-0xFF → MMIO
 ```
 
-### Comportamiento de acceso
+Cuando `addr >= 0x80`, activa `mmio_we` o `mmio_re` en lugar de acceder a la RAM interna. En `microrv8_system.v`, un mux selecciona cuál periférico responde en `mmio_data_rd`.
 
-**Escritura (`we = 1`):**
-- Si `!is_mmio`: `ram[addr[6:0]] ← data_in`
-- Si `is_mmio`: `mmio_addr ← addr`, `mmio_data_wr ← data_in`, `mmio_we ← 1`
+### Nota sobre latencia en lectura MMIO
 
-**Lectura (`re = 1`):**
-- Si `!is_mmio`: `data_out ← ram[addr[6:0]]`
-- Si `is_mmio`: `mmio_addr ← addr`, `mmio_re ← 1`, `data_out ← mmio_data_rd`
-
-### Nota sobre latencia MMIO
-
-La lectura MMIO tiene un ciclo de latencia adicional porque `mmio_data_rd` viene del periférico en el ciclo siguiente al que se presenta `mmio_re`. El CPU actualmente no tiene lógica adicional para esperar este ciclo extra — para LOAD desde MMIO el resultado puede llegar un ciclo tarde. Para las instrucciones de escritura (STORE) no hay problema porque el periférico registra el dato en el mismo flanco.
+Una lectura MMIO (LOAD desde ≥ 0x80) tiene un ciclo de latencia extra: el periférico presenta `mmio_data_rd` en el ciclo siguiente al que recibe `mmio_re`. El CPU actual no espera ese ciclo extra. En la práctica: STORE a periféricos funciona perfectamente, LOAD desde MMIO puede llegar un ciclo tarde.
 
 ---
 
-## 6. `gpio.v` — GPIO 8 bits
+## 12. `gpio.v` — GPIO 8 bits
 
 ### Función
 
-Módulo de entrada/salida de propósito general. Permite configurar cada pin como entrada o salida de forma independiente mediante el registro `GPIO_DIR`.
+Ocho pines configurables individualmente como entrada o salida. Acceso vía bus MMIO.
 
 ### Interfaz
 
@@ -347,49 +657,40 @@ module gpio_8bit (
     input  wire [7:0]  mmio_data_in,
     output reg  [7:0]  mmio_data_out,
     input  wire        mmio_we, mmio_re,
-    input  wire [7:0]  gpio_in,    // pines físicos de entrada
-    output reg  [7:0]  gpio_out,   // pines físicos de salida
-    output reg  [7:0]  gpio_dir    // control de dirección
+    input  wire [7:0]  gpio_in,
+    output reg  [7:0]  gpio_out,
+    output reg  [7:0]  gpio_dir
 );
 ```
 
-### Mapa de registros
+### Registros
 
-```
-Dirección  Acceso  Registro   Descripción
-─────────  ──────  ─────────  ────────────────────────────────────────
-0x80       W       GPIO_OUT   Escribe valor en pines configurados como salida
-0x81       R       GPIO_IN    Lee el estado actual de los pines físicos
-0x82       W       GPIO_DIR   0=input, 1=output por pin (bit a bit)
-```
+| Dirección | Acceso | Nombre   | Descripción |
+|-----------|--------|----------|-------------|
+| 0x80      | W      | GPIO_OUT | Valor de los pines de salida |
+| 0x81      | R      | GPIO_IN  | Valor actual de los pines físicos |
+| 0x82      | W      | GPIO_DIR | 0=input, 1=output por pin |
 
-### Comportamiento
+`GPIO_OUT` se actualiza sincrónicamente. `GPIO_IN` se lee combinacionalmente desde los pines físicos. `GPIO_DIR` configura los buffers tristate; la lógica tristate real está en el top level de FPGA.
 
-`gpio_out` se actualiza sincrónicamente con `posedge clk` cuando se escribe a 0x80.
-`gpio_in` se lee directamente desde los pines físicos (lectura combinacional).
-`gpio_dir` controla los buffers tristate en el top level (no implementado en el módulo, requiere lógica en el top level de la FPGA).
-
-### En el sistema completo
-
-El `gpio_out` del módulo se hace OR con el `cpu_gpio_direct` (instrucción OUT) en `microrv8_system.v`:
+### GPIO combinado en el sistema
 
 ```verilog
+// microrv8_system.v
 assign gpio_out = gpio_out_mmio | cpu_gpio_direct;
 ```
 
-Esto permite usar tanto `STORE r, 0x80` como la instrucción `OUT r` para controlar el GPIO.
+`gpio_out_mmio` viene de STORE a 0x80. `cpu_gpio_direct` viene de la instrucción OUT. Solo una actúa a la vez, el OR no genera conflictos.
 
 ---
 
-## 7. `uart.v` — UART TX + RX + Wrapper MMIO
+## 13. `uart.v` — UART TX + RX + Wrapper MMIO
 
-### Módulos contenidos
-
-El archivo `uart.v` contiene tres módulos: `uart_tx`, `uart_rx`, y `uart_mmio`.
+El archivo contiene tres módulos.
 
 ### `uart_tx` — Transmisor
 
-Implementa el protocolo UART 8N1 (8 bits de datos, sin paridad, 1 stop bit).
+Formato 8N1, LSB primero. Baud rate configurable por parámetro.
 
 ```verilog
 module uart_tx #(
@@ -398,25 +699,19 @@ module uart_tx #(
 ) (
     input  wire       clk, rst_n,
     input  wire [7:0] data_in,
-    input  wire       tx_start,    // pulso de 1 ciclo para iniciar
-    output reg        tx_busy,     // 1 mientras transmite
-    output reg        tx           // pin serial (idle = 1)
+    input  wire       tx_start,   // pulso 1 ciclo para iniciar
+    output reg        tx_busy,
+    output reg        tx          // idle = 1
 );
 ```
 
-**Divisor de baud rate:**
-```
-BAUD_DIV = CLK_FREQ / BAUD_RATE = 27,000,000 / 115,200 = 234 ciclos/bit
-```
+`BAUD_DIV = CLK_FREQ / BAUD_RATE`. Tang Nano 9K a 27 MHz con 115200 baud: `BAUD_DIV = 234 ciclos/bit`.
 
-**Estados de la FSM:**
-```
-ST_IDLE  → ST_START → ST_DATA (8 bits, LSB primero) → ST_STOP → ST_IDLE
-```
+FSM: `IDLE → START_BIT → DATA (8 bits) → STOP_BIT → IDLE`.
 
 ### `uart_rx` — Receptor
 
-Detecta el flanco de bajada del start bit, muestrea cada bit en el centro del período de baud rate usando un divisor de medio período (`HALF_DIV`).
+Detecta flanco de bajada del start bit. Muestrea cada bit en el centro de su período (`HALF_DIV` ciclos). Incluye sincronizador de 2 flip-flops en la entrada `rx`.
 
 ```verilog
 module uart_rx #(
@@ -426,41 +721,26 @@ module uart_rx #(
     input  wire       clk, rst_n,
     input  wire       rx,
     output reg  [7:0] data_out,
-    output reg        data_valid   // pulso 1 ciclo cuando byte completo
+    output reg        data_valid   // pulso 1 ciclo al completar byte
 );
 ```
 
-El módulo incluye un sincronizador de dos flip-flops en la entrada `rx` para evitar metaestabilidad.
+### `uart_mmio` — Wrapper MMIO
 
-### `uart_mmio` — Wrapper de memoria mapeada
+| Dirección | Acceso | Descripción |
+|-----------|--------|-------------|
+| 0x83      | W      | UART_TX: escribir inicia transmisión |
+| 0x84      | R      | UART_STAT: bit0 = tx_busy |
 
-```
-Dirección  Acceso  Descripción
-─────────  ──────  ──────────────────────────────────────────
-0x83       W       UART_TX: escribir aquí inicia la transmisión
-0x84       R       UART_STAT: bit0 = tx_busy
-```
-
-Si se escribe a 0x83 mientras `tx_busy = 1`, la escritura se ignora. El programa debe verificar `UART_STAT` antes de enviar.
-
-### Configuración para Tang Nano 9K
-
-```
-CLK_FREQ  = 27,000,000
-BAUD_RATE = 115,200
-BAUD_DIV  = 234 ciclos por bit
-HALF_DIV  = 117 ciclos (para centrar el muestreo)
-```
-
-Para cambiar el baud rate, modificar el parámetro `BAUD_RATE` en la instancia de `microrv8_system`.
+Escritura a 0x83 mientras `tx_busy = 1` se ignora silenciosamente. El programa debe verificar UART_STAT antes de cada envío.
 
 ---
 
-## 8. `pwm.v` — PWM 8 bits
+## 14. `pwm.v` — PWM 8 bits
 
 ### Función
 
-Genera una señal PWM (Pulse Width Modulation) con resolución de 8 bits. Se usa para controlar brillo de LEDs, velocidad de motores, o cualquier actuador analógico.
+Genera señal PWM con resolución de 8 bits y frecuencia ajustable vía prescaler.
 
 ### Interfaz
 
@@ -475,45 +755,32 @@ module pwm_8bit (
 );
 ```
 
-### Mapa de registros
+### Registros y cálculo de frecuencia
 
-```
-Dirección  Acceso  Registro    Rango    Descripción
-─────────  ──────  ──────────  ───────  ──────────────────────────────────
-0x85       R/W     PWM_DUTY    0-255    Duty cycle: 0=0%, 255=100%
-0x86       R/W     PWM_CTRL    0-3      bit0=enable, bit1=invert polaridad
-0x87       R/W     PWM_PRE     1-255    Prescaler de frecuencia
-```
-
-### Cálculo de frecuencia PWM
+| Dirección | Nombre   | Rango | Descripción |
+|-----------|----------|-------|-------------|
+| 0x85      | PWM_DUTY | 0-255 | 0=0%, 255=100% |
+| 0x86      | PWM_CTRL | 0-3   | bit0=enable, bit1=invert |
+| 0x87      | PWM_PRE  | 1-255 | Prescaler de frecuencia |
 
 ```
 f_PWM = CLK_FREQ / (PRESCALER × 256)
 
-Ejemplos a 27 MHz:
-  PRE=1   → f_PWM = 105,468 Hz  (~105 kHz)
-  PRE=105 → f_PWM = 1,004 Hz    (~1 kHz)
-  PRE=27  → f_PWM = 3,906 Hz    (~4 kHz)
+A 27 MHz:
+  PRE=1   →  ~105 kHz
+  PRE=27  →  ~3.9 kHz
+  PRE=105 →  ~1 kHz  (valor por defecto)
 ```
 
-### Implementación
-
-Usa un contador de prescaler de 8 bits y un contador PWM de 8 bits:
-
-```
-Cada (PRESCALER) ciclos de clock, el contador PWM incrementa.
-Cuando pwm_cnt < duty → salida alta
-Cuando pwm_cnt >= duty → salida baja
-El contador PWM wraps automáticamente a 0 después de 255.
-```
+Implementación: dos contadores anidados. El prescaler cuenta hasta `PRE-1` y en cada desborde el contador PWM de 8 bits avanza. Cuando `pwm_cnt < duty`, salida = 1; si no, salida = 0. El contador PWM hace wrap automático en 255.
 
 ---
 
-## 9. `uart_loader.v` — Cargador de Programas vía UART
+## 15. `uart_loader.v` — Cargador de Programas vía UART
 
 ### Función
 
-Permite cargar un nuevo programa en la `instruction_memory` desde una PC vía UART, sin necesidad de resintetizar la FPGA. Mientras carga, mantiene el CPU en reset.
+Permite reprogramar el CPU sin resintetizar la FPGA. Mientras carga, mantiene el CPU en reset. Al terminar, el CPU arranca con el nuevo programa.
 
 ### Interfaz
 
@@ -524,56 +791,41 @@ module uart_loader #(
 ) (
     input  wire        clk, rst_n,
     input  wire        rx,
-    output reg  [8:0]  wr_addr,    // dirección en instruction_memory
-    output reg  [15:0] wr_data,    // instrucción a escribir
-    output reg         wr_en,      // habilitador de escritura (1 ciclo)
-    output reg         loading,    // 1 = cargando, CPU en reset
+    output reg  [8:0]  wr_addr,
+    output reg  [15:0] wr_data,
+    output reg         wr_en,
+    output reg         loading,    // 1 = CPU en reset
     output reg         load_done   // pulso al terminar
 );
 ```
 
-### Protocolo de carga
+### Protocolo
 
 ```
-Byte 0: 0xAA         (sync byte 1)
-Byte 1: 0x55         (sync byte 2)
-Byte 2: count[8]     (bit alto del conteo de instrucciones, típicamente 0)
-Byte 3: count[7:0]   (cantidad de instrucciones a cargar)
-Byte 4+5: instr 0    (big-endian: byte alto, byte bajo)
-Byte 6+7: instr 1
-...
-Byte (4+2*N-2)+(4+2*N-1): instr N-1
+Byte 0    0xAA              sync byte 1
+Byte 1    0x55              sync byte 2
+Byte 2    count[8]          bit 8 del conteo (0 si < 256 instrucciones)
+Byte 3    count[7:0]        cantidad de instrucciones
+Bytes 4+  instrucciones     big-endian, 2 bytes por instrucción
 ```
 
-El header `0xAA 0x55` puede enviarse en cualquier momento. Si llegan bytes incorrectos, el loader regresa al estado `ST_SYNC1` y espera el próximo header válido.
+Si llegan bytes incorrectos, el loader vuelve a esperar `0xAA 0x55`. La transmisión completa puede reenviarse en cualquier momento.
 
 ### Integración en el sistema
 
 ```verilog
-// En microrv8_system.v:
 wire cpu_rst_n = rst_n & ~loader_loading;
-// El CPU está en reset mientras loading=1
 ```
 
-El loader usa `uart_rx` del archivo `uart.v`.
-
-### Uso con `uart_flash.py`
-
-```bash
-# Ensamblar con flag --binary para generar archivo con header de protocolo:
-python3 assembler.py programa.asm --binary -o programa.bin
-
-# Cargar a la FPGA:
-python3 uart_flash.py programa.bin --port COM3
-```
+Los periféricos solo usan `rst_n`; no se resetean durante la carga.
 
 ---
 
-## 10. `microrv8_system.v` — Sistema Completo
+## 16. `microrv8_system.v` — Sistema Completo
 
 ### Función
 
-Top level del sistema MicroRV8-GT. Instancia todos los módulos y los conecta mediante los buses internos. Define el mapa de memoria MMIO.
+Top level que instancia todos los módulos, define el mapa MMIO, y gestiona el reset del CPU.
 
 ### Parámetros
 
@@ -584,7 +836,7 @@ module microrv8_system #(
 )
 ```
 
-Estos parámetros se propagan a `uart_tx`, `uart_rx`, `uart_mmio`, `uart_loader`, y `pwm_8bit`.
+Se propagan a `uart_tx`, `uart_rx`, `uart_mmio`, `uart_loader` y `pwm_8bit`.
 
 ### Interfaz externa
 
@@ -601,19 +853,7 @@ Estos parámetros se propagan a `uart_tx`, `uart_rx`, `uart_mmio`, `uart_loader`
 )
 ```
 
-### Bus MMIO interno
-
-El módulo `data_memory` genera señales MMIO:
-
-```
-mmio_addr    [7:0]   Dirección del acceso
-mmio_data_wr [7:0]   Dato hacia el periférico (escritura)
-mmio_data_rd [7:0]   Dato desde el periférico (lectura, muxeado)
-mmio_we              Write enable al periférico
-mmio_re              Read enable al periférico
-```
-
-El mux de lectura selecciona qué periférico responde:
+### Mux de lectura MMIO
 
 ```verilog
 always @(*) begin
@@ -626,170 +866,117 @@ always @(*) begin
 end
 ```
 
-### Reset del CPU
+### Reset jerárquico
 
 ```verilog
-wire loader_loading;
 wire cpu_rst_n = rst_n & ~loader_loading;
 ```
 
-El CPU entra en reset en dos casos: cuando `rst_n = 0` (botón S1) o cuando `loader_loading = 1` (carga de programa en progreso).
-
-### GPIO combinado
-
-```verilog
-assign gpio_out = gpio_out_mmio | cpu_gpio_direct;
-```
-
-`gpio_out_mmio` viene del módulo `gpio_8bit` (instrucción STORE 0x80).
-`cpu_gpio_direct` viene del CPU directamente (instrucción OUT).
-Ambas fuentes son OR porque nunca pueden activarse simultáneamente.
+El CPU se resetea con el botón S1 o cuando el loader está activo. Los periféricos solo usan `rst_n`.
 
 ---
 
-## 11. `tang_nano_top.v` — Wrapper Tang Nano 9K
+## 17. `tang_nano_top.v` — Wrapper Tang Nano 9K
 
-### Función
+Adapta `microrv8_system` a los pines físicos de la Tang Nano 9K.
 
-Adapta `microrv8_system` a los pines físicos de la Tang Nano 9K. Configura el clock a 27 MHz y maneja la inversión de los LEDs (activos en bajo en esta placa).
+Clock: 27 MHz del oscilador interno. Reset: botón S1 activo bajo con pull-up.
 
-### Instancia principal
-
-```verilog
-microrv8_system #(
-    .CLK_FREQ  (27_000_000),
-    .BAUD_RATE (115200)
-) sys (...)
-```
-
-### Manejo de LEDs
-
-Los LEDs de la Tang Nano 9K son activos en bajo:
+LEDs activos en bajo:
 
 ```verilog
 assign led_n = ~gpio_out_full[5:0];
+// bit 0 → LED 0 (más cercano al USB)
+// bit 5 → LED 5 (más alejado)
 ```
 
-Bit 0 de `gpio_out` → LED 0 (más cercano al USB).
-Bit 5 de `gpio_out` → LED 5 (más alejado).
-
-### Señales de debug
-
-Los puertos `debug_pc`, `debug_state`, y `debug_instr` del sistema están conectados pero no se llevan a pines externos en este wrapper. Para debug en FPGA usar Gowin Analyzer Oscilloscope (incluido en Gowin EDA) o conectar a pines libres.
+Los puertos de debug están conectados internamente pero no van a pines externos. Para usarlos: agregar entradas en el módulo y en el `.cst`, o usar Gowin Analyzer Oscilloscope.
 
 ---
 
-## 12. `tang_nano_9k.cst` — Restricciones de Pines
-
-### Función
-
-Archivo de constraints de Gowin que asigna señales del RTL a pines físicos del chip GW1NR-9C.
+## 18. `tang_nano_9k.cst` — Restricciones de Pines
 
 ### Sintaxis
 
 ```
-IO_LOC "nombre_señal" número_pin;
-IO_PORT "nombre_señal" PULL_MODE=XXX DRIVE=X;
+IO_LOC  "nombre_señal_en_top" número_pin;
+IO_PORT "nombre_señal_en_top" PULL_MODE=UP DRIVE=8;
+
+PULL_MODE:  NONE | UP (~100kΩ) | DOWN | KEEPER
+DRIVE:      4 | 8 | 12 | 16  (mA)
 ```
 
-### Opciones de IO_PORT
+### Pines del proyecto
 
 ```
-PULL_MODE:
-  NONE    — sin resistencia de pull (para señales driven externamente)
-  UP      — pull-up interno (~100 kΩ)
-  DOWN    — pull-down interno
-  KEEPER  — mantiene el último valor cuando la señal es flotante
-
-DRIVE (corriente de salida):
-  4, 8, 12, 16  (mA)
-  Usar 8 mA para LEDs y UART. Máximo 16 mA por pin.
+Pin   Señal        Pull      Drive   Descripción
+────  ───────────  ────────  ─────   ─────────────────────────────
+52    sys_clk      NONE      —       27 MHz
+4     sys_rst_n    UP        —       Botón S1 (activo bajo)
+10    led_n[0]     NONE      8       LED 0
+11    led_n[1]     NONE      8       LED 1
+13    led_n[2]     NONE      8       LED 2
+14    led_n[3]     NONE      8       LED 3
+15    led_n[4]     NONE      8       LED 4
+16    led_n[5]     NONE      8       LED 5
+17    uart_rx      UP        —       RX desde USB-UART
+18    uart_tx      UP        8       TX hacia USB-UART
+25    pwm_out      NONE      8       Salida PWM libre
 ```
 
-### Modificar pines
-
-Si se conectan periféricos externos a pines diferentes, editar el `.cst` directamente o usar `Tools → FloorPlanner → IO Constraint` en Gowin EDA.
+Modificar pines: editar el `.cst` o usar `Tools → FloorPlanner → IO Constraint` en Gowin EDA.
 
 ---
 
-## 13. `assembler.py` — Ensamblador de Dos Pasadas
+## 19. `assembler.py` — Ensamblador de Dos Pasadas
 
 ### Función
 
-Convierte código assembly MicroRV8-GT a código máquina en formato `.hex` (para `$readmemh` en Verilog) o `.bin` (para carga vía UART con el protocolo del `uart_loader`).
+Convierte código assembly MicroRV8-GT a código máquina. Salida en `.hex` para `$readmemh` o en `.bin` con header para `uart_loader`.
 
 ### Uso desde línea de comandos
 
 ```bash
-# Compilar a .hex (formato Verilog $readmemh)
-python3 assembler.py programa.asm -o programa.hex
-
-# Compilar a .hex y .bin con listado suprimido
-python3 assembler.py programa.asm -o programa.hex --binary --no-listing
-
-# El listado se muestra por defecto
-python3 assembler.py counter.asm
+python3 assembler.py programa.asm                      # genera program.hex
+python3 assembler.py programa.asm -o salida.hex        # nombre de salida
+python3 assembler.py programa.asm --binary -o prog.bin # también .bin
+python3 assembler.py programa.asm --no-listing         # sin tabla
 ```
 
-### Estructura interna
+### Dos pasadas
 
-**Primera pasada (`first_pass`):**
-- Recorre todas las líneas
-- Elimina comentarios (`;`) y espacios en blanco
-- Detecta labels (terminan en `:`) y registra su dirección
-- Identifica instrucciones y las almacena con su dirección
+**Primera pasada:** recorre líneas, elimina comentarios (`;`), detecta labels (`:`) y registra su dirección en un diccionario.
 
-**Segunda pasada (`second_pass`):**
-- Procesa cada instrucción con su opcode y operandos
-- Resuelve referencias a labels usando el diccionario de la primera pasada
-- Para BEQ calcula el offset relativo: `target - (addr + 1)`
-- Genera la palabra de 16 bits y la agrega a `self.code`
+**Segunda pasada:** para cada instrucción construye la palabra de 16 bits. BEQ calcula el offset relativo `target - (addr + 1)`. JUMP/JAL usa los 9 bits bajos del target directamente.
 
-### Clase `Assembler`
+### Uso como librería
 
 ```python
+from assembler import Assembler
+
 asm = Assembler()
-asm.assemble(source_code_string)  # ejecuta ambas pasadas
-asm.write_hex("salida.hex")       # formato $readmemh
-asm.write_bin("salida.bin")       # con header uart_loader
-asm.listing()                     # imprime tabla formateada
+asm.assemble("ADDI r1, r0, 5\nOUT r1\nJUMP 0")
+asm.write_hex("prog.hex")
+asm.write_bin("prog.bin")
+asm.listing()
 ```
 
-### Formato del archivo `.hex`
+### Límites
 
 ```
-# Una instrucción de 16 bits por línea, en hexadecimal
-0481
-0c0f
-0481
-c080
-...
+Inmediato           -8 a +7
+JUMP/JAL target     0 a 511  (9 bits)
+BEQ offset          -8 a +7  (relativo a la instrucción siguiente)
+Programa            máximo 512 instrucciones
 ```
-
-### Formato del archivo `.bin`
-
-```
-Byte 0: 0xAA                    (sync)
-Byte 1: 0x55                    (sync)
-Byte 2: (count >> 8) & 0x01     (bit alto del conteo)
-Byte 3: count & 0xFF            (byte bajo del conteo)
-Bytes 4+: instrucciones en big-endian (2 bytes por instrucción)
-```
-
-### Límites del ensamblador
-
-- Inmediatos: `-8` a `15` (4 bits con signo)
-- Destinos JUMP/JAL: `0` a `511` (9 bits)
-- Offset BEQ: `-8` a `7` (relativo a la instrucción siguiente)
-- Programa máximo: 512 instrucciones
 
 ---
 
-## 14. `sim_gui.py` — GUI de Simulación
+## 20. `sim_gui.py` — GUI de Simulación
 
 ### Función
 
-Interfaz gráfica Tkinter para compilar y simular el proyecto con Icarus Verilog y visualizar resultados en GTKWave. Diseñada para facilitar el flujo de desarrollo sin recordar comandos de terminal.
+Interfaz gráfica con dos modos: testbench Verilog (iverilog + vvp + GTKWave) y cocotb (Python directo, sin Make).
 
 ### Uso
 
@@ -797,46 +984,30 @@ Interfaz gráfica Tkinter para compilar y simular el proyecto con Icarus Verilog
 python3 sim_gui.py
 ```
 
-### Funcionalidades
+### Modo 1 — Testbench Verilog
 
-**Detección automática de herramientas:** verifica si `iverilog`, `vvp`, y `gtkwave` están en PATH al iniciar. Muestra el estado con color (verde/rojo/naranja).
+Compila todos los `.v` del proyecto más el testbench seleccionado, corre la simulación, abre GTKWave con el `.vcd` generado. Los archivos `tb_system.v` y `tb_cpu.v` ya incluyen `$dumpfile` y `$dumpvars`.
 
-**Archivos del proyecto:** la GUI busca automáticamente todos los archivos `.v` de la lista `PROJECT_FILES` en el directorio seleccionado. No es necesario agregarlos manualmente uno por uno.
+### Modo 2 — cocotb
 
-**Botón "Todo en uno":** ejecuta compilar → simular → abrir GTKWave en secuencia.
+No necesita Makefile. Seleccionar el archivo `.py` del test, escribir el nombre del módulo top (debe coincidir exactamente con el nombre en el `.v`), clic en **Todo**. La GUI llama internamente a `cocotb_tools.runner`.
 
-**Log integrado:** muestra stdout y stderr de `iverilog` y `vvp` en un panel de texto desplazable.
-
-### Configurar GTKWave en Windows
-
-Si GTKWave no está en PATH, editar la variable al inicio del archivo:
+### GTKWave en Windows
 
 ```python
+# En sim_gui.py, primera línea configurable:
 GTKWAVE_PATH = r"C:\gtkwave64\bin\gtkwave.exe"
 ```
 
-### Personalizar archivos del proyecto
-
-La variable `PROJECT_FILES` en el código define el orden de compilación:
-
-```python
-PROJECT_FILES = [
-    "alu.v",
-    "regfile.v",
-    "cpu_core.v",
-    # ... resto de archivos
-]
-```
-
-Si se agrega un módulo nuevo, incluirlo en esta lista en el orden correcto (dependencias antes que dependientes).
+Descargar de `https://sourceforge.net/projects/gtkwave/files/` → extraer → configurar la ruta.
 
 ---
 
-## 15. `uart_flash.py` — Herramienta de Carga vía UART
+## 21. `uart_flash.py` — Herramienta de Carga vía UART
 
 ### Función
 
-Envía un archivo `.bin` (generado por `assembler.py --binary`) a la FPGA mediante el puerto serie, usando el protocolo del `uart_loader`.
+Envía un programa a la FPGA vía puerto serie usando el protocolo de `uart_loader`. No requiere resintetizar.
 
 ### Dependencia
 
@@ -847,54 +1018,40 @@ pip install pyserial
 ### Uso
 
 ```bash
-# Listar puertos disponibles
-python3 uart_flash.py --list
-
-# Cargar programa
-python3 uart_flash.py programa.bin --port COM3
-python3 uart_flash.py programa.bin --port /dev/ttyUSB0
-
-# Sin mensajes
-python3 uart_flash.py programa.bin --port COM3 --quiet
+python3 uart_flash.py --list                          # listar puertos
+python3 uart_flash.py prog.bin --port COM3            # cargar en Windows
+python3 uart_flash.py prog.bin --port /dev/ttyUSB0    # cargar en Linux
 ```
 
-### Flujo completo de recarga
+### Flujo completo
 
 ```bash
-# 1. Editar el programa
-#    (editar programa.asm)
+# 1. Escribir y ensamblar
+python3 assembler.py mi_prog.asm --binary -o mi_prog.bin
 
-# 2. Ensamblar
-python3 assembler.py programa.asm --binary -o programa.bin
-
-# 3. Cargar a la FPGA (sin sintetizar de nuevo)
-python3 uart_flash.py programa.bin --port COM3
-
-# La FPGA detiene el CPU, carga el nuevo programa,
-# y reanuda ejecución automáticamente.
+# 2. Cargar sin resintetizar
+python3 uart_flash.py mi_prog.bin --port COM3
 ```
 
 ### Troubleshooting
 
 ```
-Error: puerto no encontrado
-  → Verificar que la Tang Nano 9K está conectada
-  → En Windows: revisar Administrador de dispositivos → COM/LPT
-  → En Linux: verificar permisos: sudo usermod -a -G dialout $USER
+Puerto no encontrado
+  Windows: Administrador de dispositivos → Puertos COM y LPT
+  Linux:   sudo usermod -a -G dialout $USER  (cerrar sesión y reabrir)
 
-Error: timeout / no responde
-  → Verificar baud rate (debe ser 115200 en FPGA y en uart_flash.py)
-  → Verificar que el bitstream cargado incluye uart_loader
-  → Hacer reset de la FPGA con S1 antes de intentar cargar
+No responde
+  Verificar baud rate: 115200 en FPGA y en uart_flash.py
+  El bitstream debe incluir uart_loader
+  Presionar S1 antes de cargar para resetear
 
-Error: header inválido
-  → El archivo .bin fue generado sin el flag --binary
-  → Regenerar con: python3 assembler.py prog.asm --binary -o prog.bin
+Header inválido
+  Regenerar: python3 assembler.py prog.asm --binary -o prog.bin
 ```
 
 ---
 
-## Apéndice A — Árbol de dependencias
+## 22. Árbol de dependencias
 
 ```
 tang_nano_top.v
@@ -905,52 +1062,117 @@ tang_nano_top.v
     ├── instruction_memory.v
     ├── data_memory.v
     ├── gpio.v
-    ├── uart.v
-    │   ├── uart_tx (en uart.v)
-    │   ├── uart_rx (en uart.v)
-    │   └── uart_mmio (en uart.v)
+    ├── uart.v               ← contiene uart_tx, uart_rx, uart_mmio
     ├── pwm.v
     └── uart_loader.v
-        └── uart_rx (en uart.v)
+        └── uart_rx          ← módulo dentro de uart.v
 ```
 
-## Apéndice B — Señales de debug
+Orden de compilación para iverilog:
 
-Todas las señales de debug se propagan desde el CPU hasta el top level:
+```bash
+iverilog -g2012 -o sim.vvp \
+    alu.v regfile.v cpu_core.v \
+    instruction_memory.v data_memory.v \
+    gpio.v uart.v pwm.v uart_loader.v \
+    microrv8_system.v \
+    testbench.v
+```
+
+---
+
+## 23. Señales de debug
 
 ```
-debug_pc    [7:0]   PC actual (8 bits bajos, el bit 8 indica >255)
-debug_state [7:0]   Estado FSM actual (bits [2:0] usados: 0-4)
-debug_instr [15:0]  Instrucción en el IR actualmente
+Señal           Bits    Descripción
+─────────────   ─────   ────────────────────────────────────────────────
+debug_pc        [7:0]   PC actual (8 bits bajos; >0xFF cuando bit 8 es 1)
+debug_state     [7:0]   Estado FSM en bits [2:0]: 0=FETCH 1=DEC 2=EXE 3=MEM 4=WB
+debug_instr     [15:0]  Instrucción en el IR en este momento
 ```
 
-Para observarlas en FPGA conectarlas a pines libres en `tang_nano_top.v` y agregar las entradas en el `.cst`. También pueden analizarse con el Gowin Analyzer Oscilloscope sin modificar el pinout.
+Para observar en FPGA sin modificar el pinout: usar **Gowin Analyzer Oscilloscope** (`Tools → Gowin Analyzer Oscilloscope` en Gowin EDA). Para conectar a pines externos: agregar en `tang_nano_top.v` y en el `.cst`.
 
-## Apéndice C — Checklist de síntesis
+---
 
-Antes de sintetizar, verificar:
+## 24. Flujo de síntesis en Gowin EDA
 
-- [x] `tang_nano_top` está marcado como top module
-- [x] El archivo `.hex` del programa está en el directorio del proyecto (si usa `$readmemh`)
-- [x] El `.cst` está incluido en el proyecto
-- [x] Todos los `.v` están en la lista de fuentes en el orden correcto
-- [x] No hay señales con múltiples drivers (revisar warnings en síntesis)
-- [x] El reporte de timing muestra slack positivo (o cero) en el peor caso
-
-## Apéndice D — Extensiones futuras
-
-El diseño actual puede extenderse con:
+### Crear proyecto
 
 ```
-Característica            Dificultad   Archivos a modificar
-────────────────────────  ──────────   ──────────────────────────────
-Instrucción BNE           Baja         cpu_core.v, assembler.py
-UART RX como periférico   Baja         uart.v (agregar addr 0x88-0x89)
-Interrupciones (IRQ)      Media        cpu_core.v (agregar estado IRQ)
-Multiplicación HW         Media        alu.v, cpu_core.v, assembler.py
-Stack pointer (SP)        Media        cpu_core.v (usar r7 como SP)
-Más RAM (256 bytes)       Baja         data_memory.v (cambiar ram[0:255])
-Segundo UART              Baja         instanciar uart_mmio en system
-Comunicación SPI          Alta         nuevo módulo spi.v
+File → New Project
+  Device:  GW1NR-9C
+  Package: QFN88
+  Speed:   C6/I5
 ```
-alch todo esta dificil
+
+### Agregar fuentes
+
+Clic derecho en `Design` → `Add Files`:
+
+```
+alu.v  regfile.v  cpu_core.v
+instruction_memory.v  data_memory.v
+gpio.v  uart.v  pwm.v  uart_loader.v
+microrv8_system.v  tang_nano_top.v
+tang_nano_9k.cst
+```
+
+Clic derecho en `tang_nano_top.v` → `Set as Top Module`.
+
+### Cargar programa
+
+Editar `instruction_memory.v` (bloque `initial`) o descomentar `$readmemh`. El `.hex` debe estar en el directorio del proyecto Gowin.
+
+### Flujo de síntesis
+
+```
+Synthesize → Place & Route → Generate Bitstream → Program Device
+```
+
+### Interpretar el reporte de síntesis
+
+```
+Logic Elements:  < 8640   (el diseño usa ~800-1200)
+BRAM:            1/26     (instruction_memory = 8 Kbits)
+Timing Slack:    > 0 ns   (slack positivo = timing cumplido)
+```
+
+Errores comunes:
+
+```
+multiple drivers    Un wire manejado por dos always → revisar data_memory.v
+latch inferred      Falta default en lógica combinacional → agregar default al case
+undeclared id       Falta un archivo fuente → verificar lista en Design
+```
+
+### Programar la FPGA
+
+```
+Tools → Programmer
+  Cable: USB Cable
+  Query/Detect
+  Modo SRAM:  temporal, se borra al desconectar. Para pruebas.
+  Modo Flash: permanente. Para despliegue.
+```
+
+---
+
+## 25. Extensiones futuras
+
+```
+Extensión                Dificultad    Archivos a modificar
+───────────────────────  ──────────    ─────────────────────────────────────────
+Más RAM (256 bytes)      Muy baja      data_memory.v: ram[0:255]
+Instrucción BNE          Baja          cpu_core.v, assembler.py
+UART RX como periférico  Baja          uart.v: registros 0x88-0x89
+BGE, BLT con flags       Baja          cpu_core.v: usar carry/negative del ALU
+Segundo canal PWM        Baja          microrv8_system.v: segunda instancia pwm_8bit
+Timer como periférico    Media         timer_16bit.v (módulo existe), microrv8_system.v
+Interrupciones hardware  Media         cpu_core.v: estado S_IRQ, vector de salto
+Multiplicación en ALU    Media         alu.v: nuevo opcode, cpu_core.v, assembler.py
+Stack pointer            Media         Reservar r7 como SP, instrucciones PUSH/POP
+SPI master               Alta          nuevo módulo spi.v
+I2C master               Alta          nuevo módulo i2c.v
+Compilador C mínimo      Muy alta      Backend LLVM personalizado
+```
