@@ -33,15 +33,16 @@ module uart_loader #(
 );
 
     // Estados del protocolo
-    localparam ST_SYNC1   = 3'd0;   // Esperar 0xAA
-    localparam ST_SYNC2   = 3'd1;   // Esperar 0x55
-    localparam ST_LEN_HI  = 3'd2;   // Byte alto del conteo
-    localparam ST_LEN_LO  = 3'd3;   // Byte bajo del conteo
-    localparam ST_INSTR_H = 3'd4;   // Byte alto de instrucción
-    localparam ST_INSTR_L = 3'd5;   // Byte bajo de instrucción
-    localparam ST_DONE    = 3'd6;   // Carga completa
+    localparam ST_SYNC1   = 4'd0;   // Esperar 0xAA
+    localparam ST_SYNC2   = 4'd1;   // Esperar 0x55
+    localparam ST_LEN_HI  = 4'd2;   // Byte alto del conteo
+    localparam ST_LEN_LO  = 4'd3;   // Byte bajo del conteo
+    localparam ST_INSTR_H = 4'd4;   // Byte alto de instruccion
+    localparam ST_INSTR_L = 4'd5;   // Byte bajo de instruccion
+    localparam ST_DONE    = 4'd6;   // Carga completa
+    localparam ST_SETTLE  = 4'd7;   // Esperar estabilizacion de LUT RAM
 
-    reg [2:0]  state;
+    reg [3:0]  state;
     reg [8:0]  total;               // Cantidad de instrucciones a recibir
     reg [8:0]  count;               // Instrucciones recibidas
     reg [7:0]  instr_hi;            // Byte alto temporal
@@ -121,19 +122,36 @@ module uart_loader #(
                         wr_data <= {instr_hi, rx_byte};
                         wr_en   <= 1'b1;
                         count   <= count + 9'd1;
-                        wr_addr <= wr_addr + 9'd1;
-
+                        // wr_addr se incrementa en ST_INSTR_H del siguiente byte
+                        // para que la escritura use la direccion correcta (no la siguiente)
                         if (count + 9'd1 >= total)
                             state <= ST_DONE;
                         else
-                            state <= ST_INSTR_H;
+                            state <= 4'd8;
                     end
                 end
 
+                4'd8: begin  // ST_ADDR_INC
+                    wr_addr <= wr_addr + 9'd1;
+                    state   <= ST_INSTR_H;
+                end
+
                 ST_DONE: begin
-                    loading   <= 1'b0;
+                    // Esperar 1 ciclo extra para que la LUT RAM propague
+                    // la ultima escritura antes de que el CPU salga de reset
                     load_done <= 1'b1;
-                    state     <= ST_SYNC1;  // listo para próxima carga
+                    state     <= ST_SETTLE;
+                end
+
+                ST_SETTLE: begin
+                    // Esperar que instr_hi (registro libre) llegue a 0xFF
+                    // Se usa como contador de settle: 256 ciclos ~ 9us a 27MHz
+                    // Suficiente para que la LUT RAM propague todas las escrituras
+                    instr_hi <= instr_hi + 8'd1;
+                    if (instr_hi == 8'hFE) begin
+                        loading <= 1'b0;
+                        state   <= ST_SYNC1;
+                    end
                 end
 
                 default: state <= ST_SYNC1;

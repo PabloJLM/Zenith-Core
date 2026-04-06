@@ -1,22 +1,15 @@
 `default_nettype none
 // ============================================================================
-// CPU Core - MicroRV8-GT  (ISA v2 - definitivo)
+// CPU Core v3 - MicroRV8-GT
 // ============================================================================
-// Formato de instruccion (16 bits):
-//
-//  Tipo I  [000|rd|rs1|funct3|imm4]   ALU-Immediate
-//  Tipo R  [001|rd|rs1|funct3|rs2|0]  ALU-Register  (rs2 en bits[3:1])
-//  Tipo L  [010|rd|rs1|000|imm4]      Load
-//  Tipo S  [011|rs2|rs1|000|imm4]     Store  (dato=rs2 en [12:10])
-//  Tipo B  [100|rs1|rs2|000|imm4]     BEQ    (offset relativo)
-//  Tipo K  [101|rd|target9]           JAL    (target en [8:0])
-//  Tipo O  [110|000|rs1|000|0000]     OUT    (GPIO)
-//  Tipo J  [111|target13]             JUMP   (target en [12:0], usamos [8:0])
-//
-// funct3: 000=ADD 001=SUB 010=AND 011=OR 100=XOR 101=SLL 110=SRL 111=SLT
-//
-// BEQ: si regfile[rs1] == regfile[rs2], PC = PC+1+sign_ext(imm4)
-//      rs1 en [12:10], rs2 en [9:7]
+// Diseñado para BRAM sincrona de 1 ciclo de latencia.
+// FSM de 6 estados: S_FETCH → S_WAIT → S_DECODE → S_EXEC → S_MEM → S_WB
+//   S_FETCH:  PC → BRAM, inicia lectura
+//   S_WAIT:   espera 1 ciclo, instruccion llega al final de este estado
+//   S_DECODE: captura IR, lee registros, configura ALU
+//   S_EXEC:   ALU opera, captura resultado
+//   S_MEM:    acceso a memoria / GPIO
+//   S_WB:     writeback a regfile, actualiza PC
 // ============================================================================
 
 module cpu_core (
@@ -34,228 +27,209 @@ module cpu_core (
     output wire [7:0]  debug_state,
     output wire [15:0] debug_instr
 );
+    localparam S_FETCH  = 3'd0;
+    localparam S_WAIT   = 3'd1;
+    localparam S_DECODE = 3'd2;
+    localparam S_EXEC   = 3'd3;
+    localparam S_MEM    = 3'd4;
+    localparam S_WB     = 3'd5;
 
+    reg [2:0]  st;
     reg [8:0]  pc;
     reg [15:0] ir;
 
     assign pc_out      = pc;
     assign debug_pc    = pc[7:0];
+    assign debug_state = {5'b0, st};
     assign debug_instr = ir;
 
-    // Campos del instruction register
+    // Campos del IR
     wire [2:0] f_op  = ir[15:13];
     wire [2:0] f_rd  = ir[12:10];
     wire [2:0] f_rs1 = ir[9:7];
     wire [2:0] f_fn3 = ir[6:4];
     wire [3:0] f_imm = ir[3:0];
-    wire [8:0] f_tgt = ir[8:0];        // target JUMP/JAL
-    // rs2 segun tipo:
-    wire [2:0] f_rs2_r = ir[3:1];      // ALU-R: rs2 en [3:1]
-    // En tipo S: rs2 (dato) esta en [12:10] = f_rd
-    // En tipo B: rs1 en [12:10]=f_rd, rs2 en [9:7]=f_rs1
-
-    wire [7:0] se8 = {{4{f_imm[3]}}, f_imm};   // sign-ext 4->8
-    wire [8:0] se9 = {{5{f_imm[3]}}, f_imm};   // sign-ext 4->9
+    wire [8:0] f_tgt = ir[8:0];
+    wire [2:0] f_rs2r= ir[3:1];
+    wire [7:0] se8   = {{4{f_imm[3]}}, f_imm};
+    wire [8:0] se9   = {{5{f_imm[3]}}, f_imm};
 
     // Regfile
-    reg  [2:0] rf_rs2_addr;
-    wire [7:0] rdata1, rdata2;
-    reg  [7:0] rf_wdata;
-    reg        rf_we;
+    reg [7:0]  regs [1:7];
+    reg [2:0]  rs1_addr_r, rs2_addr_r;
+    wire [7:0] rs1_data = (rs1_addr_r == 0) ? 8'd0 : regs[rs1_addr_r];
+    wire [7:0] rs2_data = (rs2_addr_r == 0) ? 8'd0 : regs[rs2_addr_r];
 
-    regfile rf0 (
-        .clk      (clk),
-        .rst_n    (rst_n),
-        .rs1_addr (f_rs1),
-        .rs1_data (rdata1),
-        .rs2_addr (rf_rs2_addr),
-        .rs2_data (rdata2),
-        .rd_addr  (f_rd),
-        .rd_data  (rf_wdata),
-        .rd_we    (rf_we)
-    );
-
-    // ALU - operando B es registro
+    // ALU
+    reg  [7:0] alu_a, alu_b;
     reg  [2:0] alu_op;
-    reg  [7:0] alu_b;
-    wire [7:0] alu_out;
-    wire       alu_z, alu_c, alu_n;
+    reg  [8:0] alu_r9;
+    always @(*) begin
+        case (alu_op)
+            3'b000: alu_r9 = {1'b0,alu_a} + {1'b0,alu_b};
+            3'b001: alu_r9 = {1'b0,alu_a} - {1'b0,alu_b};
+            3'b010: alu_r9 = {1'b0,alu_a & alu_b};
+            3'b011: alu_r9 = {1'b0,alu_a | alu_b};
+            3'b100: alu_r9 = {1'b0,alu_a ^ alu_b};
+            3'b101: alu_r9 = {1'b0,alu_a << alu_b[2:0]};
+            3'b110: alu_r9 = {1'b0,alu_a >> alu_b[2:0]};
+            3'b111: alu_r9 = {8'd0, (alu_a < alu_b) ? 1'b1 : 1'b0};
+            default: alu_r9 = 9'd0;
+        endcase
+    end
+    wire [7:0] alu_out = alu_r9[7:0];
+    wire       alu_z   = (alu_out == 8'd0);
 
-    alu_8bit alu0 (
-        .a        (rdata1),
-        .b        (alu_b),
-        .op       (alu_op),
-        .result   (alu_out),
-        .zero     (alu_z),
-        .carry    (alu_c),
-        .negative (alu_n)
-    );
-
-    // Latches de resultado
+    // Latches
     reg [7:0] res_lat;
     reg       z_lat;
 
-    // FSM
-    localparam S0=3'd0,S1=3'd1,S2=3'd2,S3=3'd3,S4=3'd4;
-    reg [2:0] st;
-    assign debug_state = {5'b0, st};
-
+    integer i;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            st          <= S0;
-            pc          <= 9'd0;
-            ir          <= 16'd0;
-            rf_we       <= 0;
-            rf_wdata    <= 0;
-            alu_op      <= 0;
-            alu_b       <= 0;
-            res_lat     <= 0;
-            z_lat       <= 0;
-            mem_we      <= 0;
-            mem_re      <= 0;
-            mem_addr    <= 0;
-            mem_wdata   <= 0;
-            gpio_out    <= 0;
-            rf_rs2_addr <= 0;
+            st       <= S_FETCH;
+            pc       <= 9'd0;
+            ir       <= 16'd0;
+            mem_we   <= 0;
+            mem_re   <= 0;
+            gpio_out <= 8'd0;
+            alu_a    <= 8'd0;
+            alu_b    <= 8'd0;
+            alu_op   <= 3'd0;
+            res_lat  <= 8'd0;
+            z_lat    <= 0;
+            rs1_addr_r <= 3'd0;
+            rs2_addr_r <= 3'd0;
+            for (i=1;i<=7;i=i+1) regs[i] <= 8'd0;
         end else begin
-            rf_we  <= 0;
             mem_we <= 0;
             mem_re <= 0;
 
             case (st)
-                //------------------------------------------------------
-                // S0 FETCH
-                //------------------------------------------------------
-                S0: begin
-                    ir <= instruction_in;   // combinacional, ya valido
-                    st <= S1;
+                // --------------------------------------------------------
+                S_FETCH: begin
+                    // PC ya está en pc_out → BRAM inicia lectura
+                    st <= S_WAIT;
                 end
 
-                //------------------------------------------------------
-                // S1 DECODE
-                //------------------------------------------------------
-                S1: begin
+                // --------------------------------------------------------
+                S_WAIT: begin
+                    // La BRAM presenta instruction_in al final de este ciclo
+                    st <= S_DECODE;
+                end
+
+                // --------------------------------------------------------
+                S_DECODE: begin
+                    // Capturar instruccion (ya valida)
+                    ir <= instruction_in;
+                    // Leer registros usando campos de instruction_in directamente
+                    // para ganar 1 ciclo (ir se actualiza al final de S_DECODE)
+                    rs1_addr_r <= instruction_in[9:7];
+
+                    case (instruction_in[15:13])
+                        3'b001: rs2_addr_r <= instruction_in[3:1]; // R-type: rs2 en [3:1]
+                        3'b011: rs2_addr_r <= instruction_in[12:10]; // STORE: dato en f_rd
+                        3'b100: rs2_addr_r <= instruction_in[12:10]; // BEQ: rs1 en f_rd
+                        default: rs2_addr_r <= 3'd0;
+                    endcase
+                    st <= S_EXEC;
+                end
+
+                // --------------------------------------------------------
+                S_EXEC: begin
+                    // Registros ya disponibles: rs1_data, rs2_data
+                    alu_a <= rs1_data;
+
                     case (f_op)
-                        3'b000: begin   // ALU-I
-                            alu_op      <= f_fn3;
-                            alu_b       <= se8;
-                            rf_rs2_addr <= 3'd0;
+                        3'b000: begin // ALU-I
+                            alu_op <= f_fn3;
+                            alu_b  <= se8;
                         end
-                        3'b001: begin   // ALU-R
-                            alu_op      <= f_fn3;
-                            rf_rs2_addr <= f_rs2_r;
-                            alu_b       <= 8'd0;    // placeholder
+                        3'b001: begin // ALU-R
+                            alu_op <= f_fn3;
+                            alu_b  <= rs2_data;
                         end
-                        3'b010: begin   // LOAD
-                            alu_op      <= 3'b000;
-                            alu_b       <= se8;
-                            rf_rs2_addr <= 3'd0;
+                        3'b010: begin // LOAD: addr = rs1 + imm
+                            alu_op <= 3'b000;
+                            alu_b  <= se8;
                         end
-                        3'b011: begin   // STORE  dato=rs2=f_rd, base=rs1=f_rs1
-                            alu_op      <= 3'b000;
-                            alu_b       <= se8;
-                            rf_rs2_addr <= f_rd;    // dato a guardar
+                        3'b011: begin // STORE: addr = rs1 + imm
+                            alu_op <= 3'b000;
+                            alu_b  <= se8;
                         end
-                        3'b100: begin   // BEQ  rs1=f_rd, rs2=f_rs1
-                            // rdata1 = regfile[f_rs1] = BEQ.rs2
-                            // necesitamos regfile[f_rd] = BEQ.rs1 -> via rdata2
-                            alu_op      <= 3'b001;  // SUB
-                            rf_rs2_addr <= f_rd;    // BEQ.rs1 como "segundo operando"
-                            alu_b       <= 8'd0;    // placeholder
+                        3'b100: begin // BEQ: comparar rs1(via rs2_data) con rs2(via rs1_data)
+                            // rs2_addr_r=f_rd=BEQ.rs1, rs1_addr_r=f_rs1=BEQ.rs2
+                            // z_lat = (BEQ.rs1 == BEQ.rs2)
+                            z_lat  <= (rs1_data == rs2_data);
+                            alu_op <= 3'b000;
+                            alu_b  <= 8'd0;
+                        end
+                        3'b110: begin // OUT
+                            alu_op <= 3'b000;
+                            alu_b  <= 8'd0;
                         end
                         default: begin
-                            alu_op      <= 3'b000;
-                            alu_b       <= 8'd0;
-                            rf_rs2_addr <= 3'd0;
+                            alu_op <= 3'b000;
+                            alu_b  <= 8'd0;
                         end
                     endcase
-                    st <= S2;
+                    st <= S_MEM;
                 end
 
-                //------------------------------------------------------
-                // S2 EXECUTE  - rdata2 ya disponible tras DECODE
-                //------------------------------------------------------
-                S2: begin
-                    // Preparar operandos correctamente ANTES de usar ALU
-
-                    if (f_op == 3'b001) begin
-                        // ALU-R
-                        alu_b <= rdata2;
-                    end else if (f_op == 3'b100) begin
-                        // BEQ: comparar rs1 y rs2 correctamente
-                        alu_b <= rdata2;
-                    end
-
-                    st <= S3;
-                end
-
-                //------------------------------------------------------
-                // S3 MEMORY - alu_out ahora usa alu_b correcto para R/B
-                //------------------------------------------------------
-                S3: begin
-                    // Ahora sí ALU tiene operandos correctos
+                // --------------------------------------------------------
+                S_MEM: begin
                     res_lat <= alu_out;
-                    z_lat   <= alu_z;
+                    if (f_op != 3'b100) z_lat <= alu_z; // BEQ ya capturo z_lat en S_EXEC
 
                     case (f_op)
-                        3'b010: begin   // LOAD
-                            mem_addr <= res_lat;
+                        3'b010: begin // LOAD
+                            mem_addr <= alu_out;
                             mem_re   <= 1'b1;
                         end
-
-                        3'b011: begin   // STORE
-                            mem_addr  <= res_lat;
-                            mem_wdata <= rdata2;
+                        3'b011: begin // STORE
+                            mem_addr  <= alu_out;
+                            mem_wdata <= rs2_data; // dato = rs2 original (f_rd campo)
                             mem_we    <= 1'b1;
                         end
-
-                        3'b110: begin   // OUT
-                            gpio_out <= rdata1;
+                        3'b110: begin // OUT
+                            gpio_out <= rs1_data;
                         end
-
                         default: ;
                     endcase
-
-                    st <= S4;
+                    st <= S_WB;
                 end
 
-                //------------------------------------------------------
-                // S4 WRITEBACK
-                //------------------------------------------------------
-                S4: begin
+                // --------------------------------------------------------
+                S_WB: begin
                     case (f_op)
-                        3'b000, 3'b001: begin   // ALU-I / ALU-R
-                            rf_wdata <= res_lat;
-                            rf_we    <= 1'b1;
-                            pc       <= pc + 9'd1;
+                        3'b000, 3'b001: begin // ALU-I / ALU-R
+                            if (f_rd != 0) regs[f_rd] <= res_lat;
+                            pc <= pc + 9'd1;
                         end
-                        3'b010: begin           // LOAD
-                            rf_wdata <= mem_rdata;
-                            rf_we    <= 1'b1;
-                            pc       <= pc + 9'd1;
+                        3'b010: begin // LOAD
+                            if (f_rd != 0) regs[f_rd] <= mem_rdata;
+                            pc <= pc + 9'd1;
                         end
                         3'b011: pc <= pc + 9'd1; // STORE
-                        3'b100: begin            // BEQ
+                        3'b100: begin // BEQ
                             if (z_lat) pc <= pc + 9'd1 + se9;
                             else       pc <= pc + 9'd1;
                         end
-                        3'b101: begin            // JAL
-                            rf_wdata <= pc[7:0] + 8'd1;
-                            rf_we    <= 1'b1;
-                            pc       <= f_tgt;
+                        3'b101: begin // JAL
+                            if (f_rd != 0) regs[f_rd] <= pc[7:0] + 8'd1;
+                            pc <= f_tgt;
                         end
                         3'b110: pc <= pc + 9'd1; // OUT
-                        3'b111: pc <= f_tgt;     // JUMP
+                        3'b111: pc <= f_tgt;      // JUMP
                         default: pc <= pc + 9'd1;
                     endcase
-                    st <= S0;
+                    st <= S_FETCH;
                 end
 
-                default: st <= S0;
+                default: st <= S_FETCH;
             endcase
         end
     end
 
 endmodule
-
 `default_nettype wire

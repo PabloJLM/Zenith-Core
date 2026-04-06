@@ -77,13 +77,29 @@ def flash(port_name: str, bin_path: str, verbose: bool = True):
         ser.reset_output_buffer()
 
         if verbose:
-            print("Enviando...")
+            print("Limpiando memoria...")
 
+        # Paso 1: Enviar 512 NOPs para limpiar toda la BRAM
+        # Esto evita que instrucciones viejas del bitstream interfieran
+        nop_count = 512
+        nop_payload = bytes([0xAA, 0x55,
+                             (nop_count >> 8) & 0x01,
+                             nop_count & 0xFF])
+        nop_payload += bytes([0x00, 0x00] * nop_count)  # 512 NOPs
+        ser.write(nop_payload)
+        ser.flush()
+        nop_time = len(nop_payload) * 10 / BAUD_RATE
+        time.sleep(nop_time + 0.3)
+
+        if verbose:
+            print("Enviando programa...")
+
+        # Paso 2: Enviar el programa real
         ser.write(payload)
         ser.flush()
 
-        # Esperar que el loader termine (tiempo estimado de transmision + margen)
-        bytes_time = len(payload) * 10 / BAUD_RATE  # 10 bits por byte
+        # Esperar que el loader termine
+        bytes_time = len(payload) * 10 / BAUD_RATE
         time.sleep(bytes_time + 0.5)
 
         if verbose:

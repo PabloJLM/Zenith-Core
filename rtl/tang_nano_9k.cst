@@ -30,8 +30,8 @@ IO_PORT "led_n[4]" PULL_MODE=NONE DRIVE=8;
 IO_PORT "led_n[5]" PULL_MODE=NONE DRIVE=8;
 
 // UART (conversor USB-UART de la placa)
-IO_LOC "uart_tx" 18;
-IO_LOC "uart_rx" 17;
+IO_LOC "uart_tx" 17;
+IO_LOC "uart_rx" 18;
 IO_PORT "uart_tx" PULL_MODE=UP;
 IO_PORT "uart_rx" PULL_MODE=UP;
 

@@ -44,7 +44,10 @@ module microrv8_system #(
     // Debug (conectar a LEDs o dejar flotando en producción)
     output wire [7:0]  debug_pc,
     output wire [7:0]  debug_state,
-    output wire [15:0] debug_instr
+    output wire [15:0] debug_instr,
+
+    // Estado del loader (1 mientras carga un programa via UART)
+    output wire        loader_active
 );
 
     // -----------------------------------------------------------------------
@@ -52,6 +55,7 @@ module microrv8_system #(
     // -----------------------------------------------------------------------
     wire loader_loading;
     wire cpu_rst_n = rst_n & ~loader_loading;
+    assign loader_active = loader_loading;
 
     // -----------------------------------------------------------------------
     // Bus CPU <-> Instruction Memory

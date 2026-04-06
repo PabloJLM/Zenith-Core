@@ -103,95 +103,120 @@ endmodule
 // El host envía pares de bytes (instrucción 16 bits, big-endian).
 // ============================================================================
 
+// uart_rx compatible con MicroRV8-GT
+// Basado en el uart_rx del proveedor Sipeed/Gowin para Tang Nano 9K
+// Interfaz adaptada: data_out + data_valid (pulso 1 ciclo)
+// Parametro: CLK_FREQ en Hz (no MHz)
+
 module uart_rx #(
     parameter CLK_FREQ  = 27_000_000,
     parameter BAUD_RATE = 115200
 ) (
     input  wire       clk,
     input  wire       rst_n,
-    input  wire       rx,           // Pin serial entrada (idle = 1)
-    output reg  [7:0] data_out,     // Byte recibido
-    output reg        data_valid    // Pulso 1 ciclo cuando byte listo
+    input  wire       rx,
+    output reg  [7:0] data_out,
+    output reg        data_valid
 );
+    // El proveedor usa CLK_FRE en MHz: CYCLE = CLK_FRE * 1000000 / BAUD_RATE
+    // Nosotros recibimos CLK_FREQ en Hz directamente
+    localparam CYCLE     = CLK_FREQ / BAUD_RATE;
+    localparam HALF_CYCLE = CYCLE / 2;
 
-    localparam BAUD_DIV  = CLK_FREQ / BAUD_RATE;
-    localparam HALF_DIV  = BAUD_DIV / 2;
+    localparam S_IDLE     = 3'd0;
+    localparam S_START    = 3'd1;
+    localparam S_REC_BYTE = 3'd2;
+    localparam S_STOP     = 3'd3;
+    localparam S_DATA     = 3'd4;
 
-    localparam ST_IDLE  = 2'd0;
-    localparam ST_START = 2'd1;
-    localparam ST_DATA  = 2'd2;
-    localparam ST_STOP  = 2'd3;
+    reg [2:0]  state;
+    reg [2:0]  next_state;
 
-    reg [1:0]  state;
-    reg [2:0]  bit_idx;
-    reg [7:0]  shift_reg;
-    reg [15:0] baud_cnt;
+    // Sincronizador 2 flip-flops (igual que proveedor)
+    reg        rx_d0, rx_d1;
+    wire       rx_negedge = rx_d1 & ~rx_d0;  // flanco de bajada
 
-    // Sincronizador de 2 flip-flops para rx (cruce de dominio de clock)
-    reg rx_s1, rx_s;
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin rx_s1 <= 1'b1; rx_s <= 1'b1; end
-        else begin rx_s1 <= rx; rx_s <= rx_s1; end
+        if (!rst_n) begin rx_d0 <= 1'b1; rx_d1 <= 1'b1; end
+        else        begin rx_d0 <= rx;   rx_d1 <= rx_d0; end
     end
 
+    reg [7:0]  rx_bits;
+    reg [15:0] cycle_cnt;
+    reg [2:0]  bit_cnt;
+
+    // FSM de estado (igual que proveedor)
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            state      <= ST_IDLE;
-            data_out   <= 8'h00;
+        if (!rst_n) state <= S_IDLE;
+        else        state <= next_state;
+    end
+
+    always @(*) begin
+        case (state)
+            S_IDLE:
+                next_state = rx_negedge ? S_START : S_IDLE;
+            S_START:
+                next_state = (cycle_cnt == CYCLE - 1) ? S_REC_BYTE : S_START;
+            S_REC_BYTE:
+                next_state = (cycle_cnt == CYCLE - 1 && bit_cnt == 3'd7) ? S_STOP : S_REC_BYTE;
+            S_STOP:
+                // Medio ciclo para no perder el siguiente byte
+                next_state = (cycle_cnt == HALF_CYCLE - 1) ? S_DATA : S_STOP;
+            S_DATA:
+                next_state = S_IDLE;  // data_valid se acepta siempre
+            default:
+                next_state = S_IDLE;
+        endcase
+    end
+
+    // data_valid: pulso 1 ciclo cuando byte completo
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
             data_valid <= 1'b0;
-            bit_idx    <= 3'd0;
-            shift_reg  <= 8'h00;
-            baud_cnt   <= 16'd0;
-        end else begin
-            data_valid <= 1'b0;     // default
+        else if (state == S_STOP && next_state != state)
+            data_valid <= 1'b1;
+        else if (state == S_DATA)
+            data_valid <= 1'b0;
+        else
+            data_valid <= 1'b0;
+    end
 
-            case (state)
-                ST_IDLE: begin
-                    if (!rx_s) begin    // flanco bajada = start bit
-                        baud_cnt <= 16'd0;
-                        state    <= ST_START;
-                    end
-                end
+    // Latch del dato recibido
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            data_out <= 8'd0;
+        else if (state == S_STOP && next_state != state)
+            data_out <= rx_bits;
+    end
 
-                ST_START: begin
-                    // Muestrear en el centro del start bit
-                    if (baud_cnt < HALF_DIV - 1) begin
-                        baud_cnt <= baud_cnt + 1;
-                    end else begin
-                        baud_cnt <= 16'd0;
-                        bit_idx  <= 3'd0;
-                        state    <= ST_DATA;
-                    end
-                end
+    // Contador de bits
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            bit_cnt <= 3'd0;
+        else if (state == S_REC_BYTE) begin
+            if (cycle_cnt == CYCLE - 1)
+                bit_cnt <= bit_cnt + 3'd1;
+        end else
+            bit_cnt <= 3'd0;
+    end
 
-                ST_DATA: begin
-                    if (baud_cnt < BAUD_DIV - 1) begin
-                        baud_cnt <= baud_cnt + 1;
-                    end else begin
-                        baud_cnt  <= 16'd0;
-                        shift_reg <= {rx_s, shift_reg[7:1]};  // LSB primero
-                        if (bit_idx == 3'd7) begin
-                            state <= ST_STOP;
-                        end else begin
-                            bit_idx <= bit_idx + 1;
-                        end
-                    end
-                end
+    // Contador de baud
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            cycle_cnt <= 16'd0;
+        else if ((state == S_REC_BYTE && cycle_cnt == CYCLE - 1) ||
+                 next_state != state)
+            cycle_cnt <= 16'd0;
+        else
+            cycle_cnt <= cycle_cnt + 16'd1;
+    end
 
-                ST_STOP: begin
-                    if (baud_cnt < BAUD_DIV - 1) begin
-                        baud_cnt <= baud_cnt + 1;
-                    end else begin
-                        baud_cnt   <= 16'd0;
-                        data_out   <= shift_reg;
-                        data_valid <= 1'b1;
-                        state      <= ST_IDLE;
-                    end
-                end
-
-                default: state <= ST_IDLE;
-            endcase
-        end
+    // Muestrear bit en el centro del período (CYCLE/2)
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            rx_bits <= 8'd0;
+        else if (state == S_REC_BYTE && cycle_cnt == HALF_CYCLE - 1)
+            rx_bits[bit_cnt] <= rx_d0;  // usar rx_d0 (1 ciclo de latencia)
     end
 
 endmodule
