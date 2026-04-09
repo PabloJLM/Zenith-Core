@@ -47,7 +47,7 @@ Arquitectura: subset RISC-V de 16 bits, 8 registros, datos de 8 bits, periféric
 ## 1. Arquitectura general
 
 ### Diagrama de bloques
-![fs2](imgs/microxd.png)
+![fs2](../imgs/Microxd.png)
 
 ### Números clave
 
@@ -1157,22 +1157,3 @@ Tools → Programmer
 ```
 
 ---
-
-## 25. Extensiones futuras
-
-```
-Extensión                Dificultad    Archivos a modificar
-───────────────────────  ──────────    ─────────────────────────────────────────
-Más RAM (256 bytes)      Muy baja      data_memory.v: ram[0:255]
-Instrucción BNE          Baja          cpu_core.v, assembler.py
-UART RX como periférico  Baja          uart.v: registros 0x88-0x89
-BGE, BLT con flags       Baja          cpu_core.v: usar carry/negative del ALU
-Segundo canal PWM        Baja          microrv8_system.v: segunda instancia pwm_8bit
-Timer como periférico    Media         timer_16bit.v (módulo existe), microrv8_system.v
-Interrupciones hardware  Media         cpu_core.v: estado S_IRQ, vector de salto
-Multiplicación en ALU    Media         alu.v: nuevo opcode, cpu_core.v, assembler.py
-Stack pointer            Media         Reservar r7 como SP, instrucciones PUSH/POP
-SPI master               Alta          nuevo módulo spi.v
-I2C master               Alta          nuevo módulo i2c.v
-Compilador C mínimo      Muy alta      Backend LLVM personalizado
-```

@@ -1,4 +1,4 @@
-# ehh titulo xd
+# Instalación y síntesis — MicroRV8-GT
 
 Primer microcontrolador de 8 bits basado en RISC-V diseñado en Guatemala.
 
@@ -130,28 +130,28 @@ https://www.gowinsemi.com/en/support/download_eda/
 2. Descargar `Gowin EDA Education` (versión gratuita, soporta todos los FPGAs de Gowin).
 
 3. Instalar y activar la licencia gratuita o utilizar la licencia predeterminada
-![Licencia default](imgs/licencia.png)
+![Licencia default](../imgs/licencia.png)
 
 4. En Gowin EDA, crear un proyecto nuevo:
    - Device: `GW1NR-9C`
    - Package: `QFN88`
    - Speed: `C6/I5`
 
-![Device](imgs/seleccion.png)
+![Device](../imgs/seleccion.png)
 
 Asi nos queda la configuracion del dispositivo
-![config de dispositvo](imgs/targetdevice.png)
+![config de dispositvo](../imgs/targetdevice.png)
 
 ---
 
 5. Una vez seleccionada la FPGA se deben interconectar las entradas y salidas en **FloorPlanner**
-![conexiones](imgs/ruteo.png)
+![conexiones](../imgs/ruteo.png)
 
 6. Luego de compilar y comprobar que no hayan errores de conexiones se debe elegir el archivo `.fs` y las demas configuraciones del programa
-![fs](imgs/archivofs.png)
+![fs](../imgs/archivofs.png)
 
 7. el archivo `.fs` es dificil de encontrar ya que no es explicito donde se genera el archivo luego de compilar, aca hay un ejemplo de donde se encuentra el archivo
-![fs2](imgs/ubicacionfs.png)
+![fs2](../imgs/ubicacionfs.png)
 Siempre siguen esta estructura 
 `[Tu Carpeta del Proyecto] → impl → pnr → [nombre_de_tu_proyecto].fs`
 

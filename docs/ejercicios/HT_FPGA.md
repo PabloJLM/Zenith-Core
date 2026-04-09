@@ -8,7 +8,7 @@ Primer microcontrolador de 8 bits basado en RISC-V, diseñado en Guatemala.
 
 ### Diagrama de bloques
 
-![fs2](imgs/microxd.png)
+![fs2](../../imgs/Microxd.png)
 
 ### Mapa de memoria de datos
 

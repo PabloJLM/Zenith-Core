@@ -45,10 +45,12 @@ Micro/
     uart_flash.py
 
   programs/           Programas de ejemplo
-    counter.asm / .hex
-    fibonacci.asm / .hex
-    hello_uart.asm / .hex
-    pwm_demo.asm / .hex
+    todos_encendidos.asm / .bin   Enciende todos los LEDs
+    solo_out.asm / .bin           Muestra valor fijo en LEDs
+    blink_min.bin                 Blink rápido para diagnóstico
+    default_via_uart.bin          Contador con delay (mismo que ROM)
+    hello_uart.asm                Enviar bytes por UART
+    pwm_demo.asm                  Demo del módulo PWM
 
   docs/               Documentación completa
     documentacion.md      Referencia de módulos, ISA y herramientas
@@ -115,7 +117,7 @@ Ver `docs/HT_FPGA.md` para el flujo completo con capturas.
 
 ## ISA resumida
 
-8 registros (r0-r7). r0 siempre es 0. Instrucciones de 16 bits. 5 ciclos por instrucción.
+8 registros (r0-r7). r0 siempre es 0. Instrucciones de 16 bits. 6 ciclos por instrucción.
 
 ```
 ADDI rd, rs1, imm    rd = rs1 + imm       (imm: -8 a 7)
