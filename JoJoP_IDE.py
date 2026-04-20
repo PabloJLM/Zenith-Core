@@ -117,7 +117,7 @@ class PantallaWelcome(QWidget):
         diseno.setAlignment(Qt.AlignCenter)
         diseno.setSpacing(12)
 
-        img_path = Path(__file__).parent / "imgs/i7.png" #logo
+        img_path = Path(__file__).parent / "imgs/resee.jpeg" #logo imgs/i1
         if img_path.exists():
             lbl_img = QLabel()
             lbl_img.setPixmap(
@@ -177,7 +177,7 @@ class PestanaAjustes(QWidget):
 
         diseno.addWidget(grupo_ap)
 
-        grupo_rutas = QGroupBox("Rutas de backend")
+        grupo_rutas = QGroupBox("Rutas de asm")
         forma_rutas = QFormLayout(grupo_rutas)
 
         self.campo_ensamblador = QLineEdit(self.ide.ruta_ensamblador)
