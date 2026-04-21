@@ -1,11 +1,6 @@
 `default_nettype none
-// ============================================================================
-// Banco de Registros - MicroRV8-GT
-// ============================================================================
-// 8 registros x 8 bits
-// r0 siempre retorna 0 (hardwired zero, como en RISC-V)
-// Lectura combinacional, escritura síncrona
-// ============================================================================
+
+// Banco de Registros
 
 module regfile (
     input  wire       clk,
@@ -27,11 +22,10 @@ module regfile (
 
     reg [7:0] regs [0:7];          // 8 registros de 8 bits
 
-    // Lectura combinacional; r0 siempre devuelve 0
+    // Lectura combinacional; r0 siempre devuelve 0 como en RISC V
     assign rs1_data = (rs1_addr == 3'd0) ? 8'h00 : regs[rs1_addr];
     assign rs2_data = (rs2_addr == 3'd0) ? 8'h00 : regs[rs2_addr];
 
-    // Escritura síncrona; nunca se escribe r0
     integer i;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

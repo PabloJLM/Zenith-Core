@@ -1,47 +1,41 @@
 `default_nettype none
-// ============================================================================
-// MicroRV8-GT - Sistema Completo
-// ============================================================================
-// Primer microcontrolador guatemalteco de 8 bits, arquitectura RISC-V subset.
-//
+// Primer micro de 8 bits, arquitectura RISC-V (reducida xd)
 // Periféricos:
-//   - GPIO 8 bits bidireccional (MMIO 0x80-0x82)
-//   - UART TX/RX 115200 8N1    (MMIO 0x83-0x84)
+//   - GPIO 8 bits (MMIO 0x80-0x82)
+//   - UART TX/RX 115200 8N1  (MMIO 0x83-0x84)
 //   - PWM 8 bits               (MMIO 0x85-0x87)
-//   - UART Loader (carga de programas en caliente via UART)
-//
-// Mapa de memoria de datos:
+//   - UART Loader (para programar en UART)
+// Mapa de memoria de datos
 //   0x00-0x7F : RAM 128 bytes
 //   0x80      : GPIO_OUT
 //   0x81      : GPIO_IN
 //   0x82      : GPIO_DIR
-//   0x83      : UART_TX (W) / UART_RX pendiente
-//   0x84      : UART_STAT (R) bit0=tx_busy
+//   0x83      : UART_TX (W)
+//   0x84      : UART_STAT (R)
 //   0x85      : PWM_DUTY
 //   0x86      : PWM_CTRL
 //   0x87      : PWM_PRESCALER
-// ============================================================================
 
 module microrv8_system #(
     parameter CLK_FREQ  = 27_000_000,
     parameter BAUD_RATE = 115200
 ) (
     input  wire        clk,
-    input  wire        rst_n,       // Reset externo activo bajo
+    input  wire        rst_n,      
 
-    // GPIO físico
+    // GPIOs Fisicos
     input  wire [7:0]  gpio_in,
     output wire [7:0]  gpio_out,
     output wire [7:0]  gpio_dir,
 
-    // UART físico
+    // UART Fisico
     input  wire        uart_rx_pin,
     output wire        uart_tx_pin,
 
-    // PWM físico
+    // PWM Fisico
     output wire        pwm_pin,
 
-    // Debug (conectar a LEDs o dejar flotando en producción)
+    // Debug 
     output wire [7:0]  debug_pc,
     output wire [7:0]  debug_state,
     output wire [15:0] debug_instr,
@@ -50,31 +44,25 @@ module microrv8_system #(
     output wire        loader_active
 );
 
-    // -----------------------------------------------------------------------
-    // Reset combinado: externo OR loading
-    // -----------------------------------------------------------------------
     wire loader_loading;
     wire cpu_rst_n = rst_n & ~loader_loading;
     assign loader_active = loader_loading;
 
-    // -----------------------------------------------------------------------
-    // Bus CPU <-> Instruction Memory
-    // -----------------------------------------------------------------------
+    // Bus CPU - Instruction Memory
+
     wire [8:0]  cpu_pc;
     wire [15:0] cpu_instr;
 
-    // -----------------------------------------------------------------------
-    // Bus CPU <-> Data Memory
-    // -----------------------------------------------------------------------
+    // Bus CPU - Data Memory
+
     wire [7:0]  cpu_mem_addr;
     wire [7:0]  cpu_mem_wdata;
     wire [7:0]  cpu_mem_rdata;
     wire        cpu_mem_we;
     wire        cpu_mem_re;
 
-    // -----------------------------------------------------------------------
-    // Bus MMIO (data_memory -> periféricos)
-    // -----------------------------------------------------------------------
+    // Bus MMIO (data_memory -> a gpios)
+
     wire [7:0]  mmio_addr;
     wire [7:0]  mmio_data_wr;
     wire        mmio_we;
@@ -95,21 +83,15 @@ module microrv8_system #(
         endcase
     end
 
-    // -----------------------------------------------------------------------
     // GPIO directo desde CPU (opcode OUT = 110)
-    // -----------------------------------------------------------------------
     wire [7:0] cpu_gpio_direct;
 
-    // -----------------------------------------------------------------------
     // Loader
-    // -----------------------------------------------------------------------
     wire [8:0]  ldr_wr_addr;
     wire [15:0] ldr_wr_data;
     wire        ldr_wr_en;
 
-    // -----------------------------------------------------------------------
     // Instancias
-    // -----------------------------------------------------------------------
 
     cpu_core cpu (
         .clk            (clk),
@@ -151,7 +133,6 @@ module microrv8_system #(
         .mmio_re      (mmio_re)
     );
 
-    // gpio_out_mmio: salida controlada por instruccion STORE addr=0x80
     wire [7:0] gpio_out_mmio;
     wire [7:0] gpio_dir_int;
 
@@ -169,8 +150,6 @@ module microrv8_system #(
     );
     assign gpio_dir = gpio_dir_int;
 
-    // gpio_out final: OR de OUT directo y MMIO STORE
-    // En cualquier programa solo una fuente escribe a la vez
     assign gpio_out = gpio_out_mmio | cpu_gpio_direct;
 
     uart_mmio #(
@@ -212,18 +191,7 @@ module microrv8_system #(
         .load_done()
     );
 
-    // Suprimir warning de cpu_gpio_direct si no se usa externamente
-    // (el GPIO directo via opcode OUT ya está en gpio_out via MMIO)
-    // gpio_out del sistema combina:
-    //   cpu_gpio_direct -> instruccion OUT (opcode 110)
-    //   gpio_8bit.gpio_out -> instruccion STORE addr=0x80
-    // Se usa OR porque solo una puede escribir a la vez.
-    // Para programas que usan OUT: gpio_out = cpu_gpio_direct
-    // Para programas que usan STORE 0x80: gpio_out = gpio_8bit output (ya conectado al port)
-    // El port gpio_out del modulo ya esta conectado a gpio_8bit.gpio_out arriba.
-    // Aqui sobreescribimos con OR para que OUT tambien funcione:
-    // (gpio ya declarado como output wire del modulo, conectado a gpio_8bit.gpio_out)
-    wire _cpu_out_suppress = &{cpu_gpio_direct[7:0]};  // evitar unused warning por ahora
+    wire _cpu_out_suppress = &{cpu_gpio_direct[7:0]}; 
 
 endmodule
 

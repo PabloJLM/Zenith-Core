@@ -1,12 +1,5 @@
 `default_nettype none
-// ============================================================================
-// Tang Nano 9K - Top Level - MicroRV8-GT
-// ============================================================================
-// LED 5 (el más alejado del USB) muestra el estado del uart_loader:
-//   LED 5 ENCENDIDO = loader activo, recibiendo programa por UART
-//   LED 5 APAGADO   = CPU corriendo normalmente
-// Esto evita que Gowin elimine el uart_loader por optimización.
-// ============================================================================
+// archivo verilog para cargar solo a la fpga eliminar en tinytapeout
 
 module tang_nano_top (
     input  wire       sys_clk,
@@ -39,11 +32,6 @@ module tang_nano_top (
         .loader_active (loader_active)
     );
 
-    // LEDs activos en bajo.
-    // Bits 4:0 muestran GPIO normalmente.
-    // Bit 5 (LED más alejado del USB) muestra si el loader está recibiendo:
-    //   loader_active=1 -> led_n[5]=0 -> LED 5 encendido
-    //   loader_active=0 -> led_n[5]=~gpio_out_full[5] -> normal
     assign led_n[4:0] = ~gpio_out_full[4:0];
     assign led_n[5]   = loader_active ? 1'b0 : ~gpio_out_full[5];
 

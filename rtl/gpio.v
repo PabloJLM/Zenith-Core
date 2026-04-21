@@ -1,12 +1,4 @@
 `default_nettype none
-// ============================================================================
-// GPIO 8 bits - MicroRV8-GT
-// ============================================================================
-// Registros MMIO:
-//   0x80 GPIO_OUT  (W) - salida a pines físicos
-//   0x81 GPIO_IN   (R) - lectura de pines físicos
-//   0x82 GPIO_DIR  (W) - dirección bit a bit: 0=input, 1=output
-// ============================================================================
 
 module gpio_8bit (
     input  wire        clk,
@@ -29,11 +21,11 @@ module gpio_8bit (
     localparam ADDR_IN  = 8'h81;
     localparam ADDR_DIR = 8'h82;
 
-    // Escritura síncrona
+    // Escritura 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             gpio_out <= 8'h00;
-            gpio_dir <= 8'hFF;  // todos como output por defecto
+            gpio_dir <= 8'hFF;  // todos como output al incio 
         end else if (mmio_we) begin
             case (mmio_addr)
                 ADDR_OUT: gpio_out <= mmio_data_in;
@@ -43,7 +35,6 @@ module gpio_8bit (
         end
     end
 
-    // Lectura combinacional
     always @(*) begin
         mmio_data_out = 8'h00;
         if (mmio_re) begin

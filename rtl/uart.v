@@ -1,11 +1,6 @@
 `default_nettype none
-// ============================================================================
-// UART TX - MicroRV8-GT
-// ============================================================================
-// 8N1, baud rate configurable por parámetro.
-// Tang Nano 9K = 27 MHz -> BAUD_DIV = 27_000_000 / 115200 = 234
-// Para simulación usar CLK_FREQ bajo (ej: 1_000_000) para no esperar miles de ciclos.
-// ============================================================================
+// UART TX
+// 8N1, baud rate configurable con registros
 
 module uart_tx #(
     parameter CLK_FREQ  = 27_000_000,
@@ -16,7 +11,7 @@ module uart_tx #(
     input  wire [7:0] data_in,      // Byte a enviar
     input  wire       tx_start,     // Pulso de 1 ciclo para iniciar
     output reg        tx_busy,      // 1 mientras transmite
-    output reg        tx            // Pin serial (idle = 1)
+    output reg        tx            // Pin serial siempre tira 1 sinoi se usa
 );
 
     localparam BAUD_DIV = CLK_FREQ / BAUD_RATE;
@@ -96,17 +91,8 @@ module uart_tx #(
 endmodule
 
 
-// ============================================================================
-// UART RX - MicroRV8-GT
-// ============================================================================
-// Receptor para programar la instruction memory desde PC vía UART.
-// El host envía pares de bytes (instrucción 16 bits, big-endian).
-// ============================================================================
-
-// uart_rx compatible con MicroRV8-GT
-// Basado en el uart_rx del proveedor Sipeed/Gowin para Tang Nano 9K
-// Interfaz adaptada: data_out + data_valid (pulso 1 ciclo)
-// Parametro: CLK_FREQ en Hz (no MHz)
+// UART RX 
+// Receptor para programar la instruction mem
 
 module uart_rx #(
     parameter CLK_FREQ  = 27_000_000,
@@ -118,8 +104,8 @@ module uart_rx #(
     output reg  [7:0] data_out,
     output reg        data_valid
 );
-    // El proveedor usa CLK_FRE en MHz: CYCLE = CLK_FRE * 1000000 / BAUD_RATE
-    // Nosotros recibimos CLK_FREQ en Hz directamente
+    // usa CLK_FRE en MHz: CYCLE = CLK_FRE * 1000000 / BAUD_RATE
+    // se recibe en CLK_FREQ en Hz
     localparam CYCLE     = CLK_FREQ / BAUD_RATE;
     localparam HALF_CYCLE = CYCLE / 2;
 
@@ -132,7 +118,6 @@ module uart_rx #(
     reg [2:0]  state;
     reg [2:0]  next_state;
 
-    // Sincronizador 2 flip-flops (igual que proveedor)
     reg        rx_d0, rx_d1;
     wire       rx_negedge = rx_d1 & ~rx_d0;  // flanco de bajada
 
@@ -145,7 +130,7 @@ module uart_rx #(
     reg [15:0] cycle_cnt;
     reg [2:0]  bit_cnt;
 
-    // FSM de estado (igual que proveedor)
+    // maquina de estados
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) state <= S_IDLE;
         else        state <= next_state;
@@ -160,16 +145,15 @@ module uart_rx #(
             S_REC_BYTE:
                 next_state = (cycle_cnt == CYCLE - 1 && bit_cnt == 3'd7) ? S_STOP : S_REC_BYTE;
             S_STOP:
-                // Medio ciclo para no perder el siguiente byte
+                
                 next_state = (cycle_cnt == HALF_CYCLE - 1) ? S_DATA : S_STOP;
             S_DATA:
-                next_state = S_IDLE;  // data_valid se acepta siempre
+                next_state = S_IDLE; 
             default:
                 next_state = S_IDLE;
         endcase
     end
 
-    // data_valid: pulso 1 ciclo cuando byte completo
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             data_valid <= 1'b0;
@@ -181,7 +165,6 @@ module uart_rx #(
             data_valid <= 1'b0;
     end
 
-    // Latch del dato recibido
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             data_out <= 8'd0;
@@ -211,24 +194,18 @@ module uart_rx #(
             cycle_cnt <= cycle_cnt + 16'd1;
     end
 
-    // Muestrear bit en el centro del período (CYCLE/2)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
             rx_bits <= 8'd0;
         else if (state == S_REC_BYTE && cycle_cnt == HALF_CYCLE - 1)
-            rx_bits[bit_cnt] <= rx_d0;  // usar rx_d0 (1 ciclo de latencia)
+            rx_bits[bit_cnt] <= rx_d0; 
     end
 
 endmodule
 
-
-// ============================================================================
-// UART MMIO Wrapper - MicroRV8-GT
-// ============================================================================
 // Registros:
 //   0x83 UART_TX   (W) - escribe byte para transmitir
-//   0x84 UART_STAT (R) - bit0 = tx_busy
-// ============================================================================
+//   0x84 UART_STAT (R) - bit0 = ocupado
 
 module uart_mmio #(
     parameter CLK_FREQ  = 27_000_000,
@@ -237,14 +214,13 @@ module uart_mmio #(
     input  wire        clk,
     input  wire        rst_n,
 
-    // Bus MMIO
     input  wire [7:0]  mmio_addr,
     input  wire [7:0]  mmio_data_in,
     output reg  [7:0]  mmio_data_out,
     input  wire        mmio_we,
     input  wire        mmio_re,
 
-    // Pines físicos
+    // Pines fisico
     output wire        uart_tx_pin
 );
 

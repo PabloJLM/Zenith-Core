@@ -1,17 +1,13 @@
 `default_nettype none
-// ============================================================================
-// PWM 8 bits - MicroRV8-GT
-// ============================================================================
-// PWM de resolución de 8 bits usando contador de 8 bits.
+// PWM de 8 bits usando contador de 8 bits.
 // Frecuencia PWM = CLK_FREQ / (PRESCALER * 256)
 //
 // Registros MMIO:
-//   0x85 PWM_DUTY   (W) - duty cycle: 0=0%, 255=100%
-//   0x86 PWM_CTRL   (W) - bit0=enable, bit1=invert
+//   0x85 PWM_DUTY   (W)
+//   0x86 PWM_CTRL   (W) - bit0=enable, bit1=invertidoo
 //   0x87 PWM_PRE    (W) - prescaler (1-255, 0=sin prescaler=255)
 //
 // Ejemplo: CLK=27MHz, PRE=105 -> freq PWM = 27e6 / (105*256) = ~1 kHz
-// ============================================================================
 
 module pwm_8bit (
     input  wire       clk,
@@ -72,23 +68,23 @@ module pwm_8bit (
         end
     end
 
-    // Generación de PWM
+    // PWM
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pre_cnt <= 8'd0;
             pwm_cnt <= 8'd0;
             pwm_out <= 1'b0;
         end else if (!enable) begin
-            pwm_out <= invert ? 1'b1 : 1'b0;  // salida fija cuando deshabilitado
+            pwm_out <= invert ? 1'b1 : 1'b0;  
             pre_cnt <= 8'd0;
             pwm_cnt <= 8'd0;
         end else begin
             // Prescaler
             if (pre_cnt >= prescaler - 1) begin
                 pre_cnt <= 8'd0;
-                // Contador PWM de 8 bits (wraps automáticamente)
+                // Contador PWM de 8 bits 
                 pwm_cnt <= pwm_cnt + 8'd1;
-                // Comparar: si contador < duty, salida alta
+                // Comparar: si contador < duty
                 if (pwm_cnt < duty)
                     pwm_out <= invert ? 1'b0 : 1'b1;
                 else
