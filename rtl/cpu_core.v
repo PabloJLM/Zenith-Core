@@ -1,17 +1,12 @@
 `default_nettype none
-// ============================================================================
-// CPU Core v3 - MicroRV8-GT
-// ============================================================================
-// Diseñado para BRAM sincrona de 1 ciclo de latencia.
-// FSM de 6 estados: S_FETCH → S_WAIT → S_DECODE → S_EXEC → S_MEM → S_WB
+// CPU
+// Maquina de estados - FETCH → WAIT → DECODE → EXEC → MEM → WRITE
 //   S_FETCH:  PC → BRAM, inicia lectura
 //   S_WAIT:   espera 1 ciclo, instruccion llega al final de este estado
 //   S_DECODE: captura IR, lee registros, configura ALU
 //   S_EXEC:   ALU opera, captura resultado
 //   S_MEM:    acceso a memoria / GPIO
 //   S_WB:     writeback a regfile, actualiza PC
-// ============================================================================
-
 module cpu_core (
     input  wire        clk,
     input  wire        rst_n,
@@ -106,24 +101,21 @@ module cpu_core (
             mem_re <= 0;
 
             case (st)
-                // --------------------------------------------------------
+
                 S_FETCH: begin
-                    // PC ya está en pc_out → BRAM inicia lectura
+                    
                     st <= S_WAIT;
                 end
 
-                // --------------------------------------------------------
                 S_WAIT: begin
-                    // La BRAM presenta instruction_in al final de este ciclo
+                    
                     st <= S_DECODE;
                 end
 
-                // --------------------------------------------------------
                 S_DECODE: begin
-                    // Capturar instruccion (ya valida)
+                    // Capturar instruccion
                     ir <= instruction_in;
                     // Leer registros usando campos de instruction_in directamente
-                    // para ganar 1 ciclo (ir se actualiza al final de S_DECODE)
                     rs1_addr_r <= instruction_in[9:7];
 
                     case (instruction_in[15:13])
@@ -135,7 +127,6 @@ module cpu_core (
                     st <= S_EXEC;
                 end
 
-                // --------------------------------------------------------
                 S_EXEC: begin
                     // Registros ya disponibles: rs1_data, rs2_data
                     alu_a <= rs1_data;
@@ -157,7 +148,7 @@ module cpu_core (
                             alu_op <= 3'b000;
                             alu_b  <= se8;
                         end
-                        3'b100: begin // BEQ: comparar rs1(via rs2_data) con rs2(via rs1_data)
+                        3'b100: begin // BEQ: comparar rs1 con rs2
                             // rs2_addr_r=f_rd=BEQ.rs1, rs1_addr_r=f_rs1=BEQ.rs2
                             // z_lat = (BEQ.rs1 == BEQ.rs2)
                             z_lat  <= (rs1_data == rs2_data);
@@ -176,10 +167,9 @@ module cpu_core (
                     st <= S_MEM;
                 end
 
-                // --------------------------------------------------------
                 S_MEM: begin
                     res_lat <= alu_out;
-                    if (f_op != 3'b100) z_lat <= alu_z; // BEQ ya capturo z_lat en S_EXEC
+                    if (f_op != 3'b100) z_lat <= alu_z; 
 
                     case (f_op)
                         3'b010: begin // LOAD
@@ -188,7 +178,7 @@ module cpu_core (
                         end
                         3'b011: begin // STORE
                             mem_addr  <= alu_out;
-                            mem_wdata <= rs2_data; // dato = rs2 original (f_rd campo)
+                            mem_wdata <= rs2_data; // dato = rs2 original
                             mem_we    <= 1'b1;
                         end
                         3'b110: begin // OUT
@@ -199,7 +189,6 @@ module cpu_core (
                     st <= S_WB;
                 end
 
-                // --------------------------------------------------------
                 S_WB: begin
                     case (f_op)
                         3'b000, 3'b001: begin // ALU-I / ALU-R
