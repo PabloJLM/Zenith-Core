@@ -1,9 +1,5 @@
 `default_nettype none
-// ============================================================================
-// Data Memory (RAM + MMIO decode) - MicroRV8-GT
-// ============================================================================
-// Mapa de memoria:
-//   0x00 - 0x7F : RAM de 128 bytes (uso general + stack)
+//   0x00 - 0x7F : RAM de 128 bytes
 //   0x80 - 0xFF : Memory-Mapped I/O
 //     0x80 : GPIO_OUT   (W) - pines de salida
 //     0x81 : GPIO_IN    (R) - pines de entrada
@@ -13,7 +9,7 @@
 //     0x85 : PWM_DUTY   (W) - duty cycle (0-255)
 //     0x86 : PWM_CTRL   (W) - bit0 = enable
 //     0x87 : reservado
-// ============================================================================
+
 
 module data_memory (
     input  wire        clk,
@@ -24,7 +20,6 @@ module data_memory (
     input  wire        re,
     output reg  [7:0]  data_out,
 
-    // Bus MMIO hacia periféricos
     output reg  [7:0]  mmio_addr,
     output reg  [7:0]  mmio_data_wr,   // dato hacia periférico
     input  wire [7:0]  mmio_data_rd,   // dato desde periférico
@@ -32,14 +27,11 @@ module data_memory (
     output reg         mmio_re
 );
 
-    // Físicamente solo los 128 bytes bajos son RAM
+
     reg [7:0] ram [0:127];
 
-    wire is_mmio = addr[7];             // bit 7 = 1 -> MMIO (0x80-0xFF)
+    wire is_mmio = addr[7];             
 
-    // -----------------------------------------------------------------------
-    // Acceso a RAM y MMIO (un único bloque always para cada grupo de salidas)
-    // -----------------------------------------------------------------------
     integer i;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -51,7 +43,7 @@ module data_memory (
             for (i = 0; i < 128; i = i + 1)
                 ram[i] <= 8'h00;
         end else begin
-            // Defaults
+
             mmio_we <= 1'b0;
             mmio_re <= 1'b0;
 
@@ -60,7 +52,7 @@ module data_memory (
                     // Escribir RAM
                     ram[addr[6:0]] <= data_in;
                 end else begin
-                    // Escribir periférico
+                    // mmio
                     mmio_addr    <= addr;
                     mmio_data_wr <= data_in;
                     mmio_we      <= 1'b1;
@@ -72,7 +64,7 @@ module data_memory (
                     // Leer RAM
                     data_out <= ram[addr[6:0]];
                 end else begin
-                    // Leer periférico (dato disponible en siguiente ciclo)
+                    // Leer mmio para el siguiente ciclo 
                     mmio_addr <= addr;
                     mmio_re   <= 1'b1;
                     data_out  <= mmio_data_rd;
