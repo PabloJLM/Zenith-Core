@@ -4,14 +4,14 @@ import subprocess
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QRegExp
-from PyQt5.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QSyntaxHighlighter
+from PyQt5.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QSyntaxHighlighter, QPainter
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout,
     QPushButton, QFileDialog, QTextEdit, QPlainTextEdit,
     QLabel, QComboBox, QSplitter, QMessageBox,
     QSpinBox, QGroupBox, QLineEdit, QListWidget, QListWidgetItem,
-    QButtonGroup, QScrollArea, QFrame
+    QButtonGroup, QScrollArea, QFrame, QCheckBox, QSlider
 )
 
 try:
@@ -20,9 +20,11 @@ try:
 except ImportError:
     tiene_serial = False
 
+# Rutas -----------------------------------------
 _BASE          = Path(__file__).parent
 _TEMAS_PATH    = _BASE / "temas.json"
 _EJEMPLOS_PATH = _BASE / "ejemplos.json"
+_BG_PATH       = _BASE / "imgs" / "bg"
 
 def cargar_temas() -> dict:
     with _TEMAS_PATH.open(encoding="utf-8") as f:
@@ -36,12 +38,83 @@ TEMAS: dict    = cargar_temas()
 EJEMPLOS: dict = cargar_ejemplos()
 
 def buscar_tema(nombre: str) -> dict:
-    # busca el tema por nombre 
+    # busca el tema por nombre en todas las categorias
     for categoria in TEMAS.values():
         if nombre in categoria:
             return categoria[nombre]
-    return TEMAS["Reze"]["Reze"]  
+    return TEMAS["Reze"]["Reze"]  # fallback
 
+
+# Editor con imagen de fondo ---------------------------------------
+class EditorConFondo(QPlainTextEdit):
+    # sobreescribe paintEvent para dibujar imagen de fondo con opacidad
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pixmap   = None
+        self._opacidad = 0.15
+        self._activo   = False
+
+    def set_fondo(self, ruta: str | None, activo: bool, opacidad: float):
+        self._activo   = activo
+        self._opacidad = opacidad
+        if ruta and Path(ruta).exists() and activo:
+            self._pixmap = QPixmap(ruta)
+        else:
+            self._pixmap = None
+        self.viewport().update()
+
+    def paintEvent(self, event):
+        # dibuja la imagen antes del texto
+        if self._pixmap and self._activo:
+            painter = QPainter(self.viewport())
+            painter.setOpacity(self._opacidad)
+            scaled = self._pixmap.scaled(
+                self.viewport().size(),
+                Qt.KeepAspectRatioByExpanding,
+                Qt.SmoothTransformation
+            )
+            x = (self.viewport().width()  - scaled.width())  // 2
+            y = (self.viewport().height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            painter.end()
+        super().paintEvent(event)
+
+
+# Ventana con imagen de fondo --------------------------------------
+class VentanaConFondo(QMainWindow):
+    # sobreescribe paintEvent para fondo en toda la ventana
+    def __init__(self):
+        super().__init__()
+        self._pixmap   = None
+        self._opacidad = 0.08
+        self._activo   = False
+
+    def set_fondo_ventana(self, ruta: str | None, activo: bool, opacidad: float):
+        self._activo   = activo
+        self._opacidad = opacidad
+        if ruta and Path(ruta).exists() and activo:
+            self._pixmap = QPixmap(ruta)
+        else:
+            self._pixmap = None
+        self.update()
+
+    def paintEvent(self, event):
+        if self._pixmap and self._activo:
+            painter = QPainter(self)
+            painter.setOpacity(self._opacidad)
+            scaled = self._pixmap.scaled(
+                self.size(),
+                Qt.KeepAspectRatioByExpanding,
+                Qt.SmoothTransformation
+            )
+            x = (self.width()  - scaled.width())  // 2
+            y = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            painter.end()
+        super().paintEvent(event)
+
+
+# Widget de boton de tema con preview de colores ------------------
 class BotonTema(QPushButton):
     # boton con nombre del tema y 5 bolitas de colores del hl
     def __init__(self, nombre: str, datos: dict, parent=None):
@@ -163,11 +236,13 @@ class SelectorTemas(QWidget):
         if nombre in self._botones:
             self._botones[nombre].setChecked(True)
 
+
+# Resaltador de sintaxis -------------------------------------------
 class ResaltadorAsm(QSyntaxHighlighter):
     def __init__(self, documento):
         super().__init__(documento)  # inicia lo que resalta el ide de sintaxis
         self.reglas = []
-        self.recargar(TEMAS["Reze"]["Reze"]["hl"])  
+        self.recargar(TEMAS["Reze"]["Reze"]["hl"])  # reze al iniciar
 
     def recargar(self, colores):
         self.reglas = []
@@ -200,6 +275,7 @@ class ResaltadorAsm(QSyntaxHighlighter):
                 idx = patron.indexIn(texto, idx + largo)
 
 
+# Pantalla de bienvenida -------------------------------------------
 class PantallaWelcome(QWidget):  # pantalla inicial del IDE
     def __init__(self):
         super().__init__()
@@ -237,8 +313,9 @@ class PantallaWelcome(QWidget):  # pantalla inicial del IDE
         diseno.addWidget(creditos)
 
 
+# Pestaña de ejemplos ----------------------------------------------
 class PestanaEjemplos(QWidget):
-
+    # lista de snippets a la izquierda, descripcion + preview a la derecha
     def __init__(self, ide):
         super().__init__()
         self.ide = ide
@@ -277,7 +354,8 @@ class PestanaEjemplos(QWidget):
         self.desc.setText(datos.get("desc", ""))
         self.preview.setPlainText(datos.get("code", ""))
 
-    def _cargar(self): #carga el ejemplo
+    def _cargar(self):
+        # carga el snippet seleccionado directo en el editor
         item = self.lista.currentItem()
         if not item:
             return
@@ -288,6 +366,7 @@ class PestanaEjemplos(QWidget):
         self.ide.pestanas.setCurrentIndex(1)  # ir al editor
 
 
+# Pestaña de ajustes -----------------------------------------------
 class PestanaAjustes(QWidget):
     def __init__(self, ide):  # configura el panel con tema fuente tamaño y rutas
         super().__init__()
@@ -297,6 +376,7 @@ class PestanaAjustes(QWidget):
         diseno.setSpacing(10)
         diseno.setContentsMargins(16, 16, 16, 16)
 
+        # apariencia y temas
         grupo_ap = QGroupBox("Apariencia")
         layout_ap = QVBoxLayout(grupo_ap)
 
@@ -322,6 +402,35 @@ class PestanaAjustes(QWidget):
 
         diseno.addWidget(grupo_ap)
 
+        # imagen de fondo
+        grupo_bg = QGroupBox("Imagen de fondo")
+        layout_bg = QVBoxLayout(grupo_bg)
+
+        self.check_bg_editor = QCheckBox("Fondo en el editor")
+        self.check_bg_editor.stateChanged.connect(self._actualizar_fondo)
+        layout_bg.addWidget(self.check_bg_editor)
+
+        self.check_bg_ventana = QCheckBox("Fondo en la ventana")
+        self.check_bg_ventana.stateChanged.connect(self._actualizar_fondo)
+        layout_bg.addWidget(self.check_bg_ventana)
+
+        fila_op = QHBoxLayout()
+        fila_op.addWidget(QLabel("Opacidad:"))
+        self.slider_opacidad = QSlider(Qt.Horizontal)
+        self.slider_opacidad.setRange(1, 40)   # 1% a 40%
+        self.slider_opacidad.setValue(15)
+        self.slider_opacidad.valueChanged.connect(self._actualizar_fondo)
+        fila_op.addWidget(self.slider_opacidad)
+        self.lbl_opacidad = QLabel("15%")
+        self.slider_opacidad.valueChanged.connect(
+            lambda v: self.lbl_opacidad.setText(f"{v}%")
+        )
+        fila_op.addWidget(self.lbl_opacidad)
+        layout_bg.addLayout(fila_op)
+
+        diseno.addWidget(grupo_bg)
+
+        # rutas de asm
         grupo_rutas = QGroupBox("Rutas de asm")
         forma_rutas = QFormLayout(grupo_rutas)
 
@@ -350,6 +459,13 @@ class PestanaAjustes(QWidget):
         diseno.addWidget(grupo_rutas)
         diseno.addStretch()
 
+    def _actualizar_fondo(self):
+        # re-aplica el fondo con los valores actuales de los toggles
+        op  = self.slider_opacidad.value() / 100
+        bg  = self.ide._bg_actual
+        self.ide.editor.set_fondo(bg, self.check_bg_editor.isChecked(), op)
+        self.ide.set_fondo_ventana(bg, self.check_bg_ventana.isChecked(), op)
+
     def elegir_ruta(self, campo):  # abre un dialogo y la guarda (busca archivos .py)
         ruta, _ = QFileDialog.getOpenFileName(self, "Elegir script", "", "Python (*.py)")
         if ruta:
@@ -360,7 +476,7 @@ class PestanaAjustes(QWidget):
         self.ide.editor.setFont(QFont(nombre, tam))
         self.ide.consola.setFont(QFont(nombre, tam - 1))
 
-    def cambiar_tamanio(self, tam):  # cambia el tamaño de la fuente, la consola siempre es mas pequeña por -1
+    def cambiar_tamanio(self, tam):  # cambia el tamaño de la fuente, la consola siempre es mas pequeña
         nombre = self.combo_fuente.currentText()
         self.ide.editor.setFont(QFont(nombre, tam))
         self.ide.consola.setFont(QFont(nombre, tam - 1))
@@ -371,7 +487,8 @@ class PestanaAjustes(QWidget):
         self.ide.escribir_consola("Rutas actualizadas.", "#4EC9B0")
 
 
-class JoJoPIDE(QMainWindow):  # ventana principal
+# Ventana principal ------------------------------------------------
+class JoJoPIDE(VentanaConFondo):  # ventana principal — hereda fondo de ventana
     def __init__(self):  # añade titulo, tamaño y rutas por defecto
         super().__init__()
         self.setWindowTitle("JoJoP_IDE")
@@ -379,16 +496,18 @@ class JoJoPIDE(QMainWindow):  # ventana principal
         self.archivo_actual   = None
         self.ruta_ensamblador = str(_BASE / "tools" / "assembler.py")
         self.ruta_flasher     = str(_BASE / "tools" / "uart_flash.py")
+        self._bg_actual       = None  # ruta de imagen del tema actual
         self.construir_ui()
         self.aplicar_tema("Reze")  # default jsjs
 
     def construir_ui(self):  # crea las pestañas de arriba
         self.pestanas = QTabWidget()
         self.setCentralWidget(self.pestanas)
+        self._tab_ajustes = PestanaAjustes(self)
         self.pestanas.addTab(PantallaWelcome(),      "Inicio")
         self.pestanas.addTab(self.crear_editor(),    "Editor")
         self.pestanas.addTab(PestanaEjemplos(self),  "Ejemplos")
-        self.pestanas.addTab(PestanaAjustes(self),   "Ajustes")
+        self.pestanas.addTab(self._tab_ajustes,      "Ajustes")
 
     def crear_editor(self):  # pone la barra, selector de puerto, editor de texto, consola
         contenedor = QWidget()
@@ -435,7 +554,8 @@ class JoJoPIDE(QMainWindow):  # ventana principal
 
         divisor = QSplitter(Qt.Vertical)
 
-        self.editor = QPlainTextEdit()
+        # editor con soporte de imagen de fondo
+        self.editor = EditorConFondo()
         self.editor.setFont(QFont("Courier New", 10))
         self.editor.setTabStopDistance(28)
         self.resaltador = ResaltadorAsm(self.editor.document())
@@ -457,9 +577,21 @@ class JoJoPIDE(QMainWindow):  # ventana principal
         self.get_puertos()
         return contenedor
 
-    def aplicar_tema(self, nombre):  # aplica los temas segun elegidos por default esta spider lily
+    def aplicar_tema(self, nombre):  # aplica los temas segun elegidos por default esta reze
         t = buscar_tema(nombre)
 
+        # imagen de fondo del tema — busca en imgs/bg/
+        bg_file = t.get("bg")
+        bg_path = str(_BG_PATH / bg_file) if bg_file else None
+        self._bg_actual = bg_path
+
+        # aplica fondo segun los toggles actuales en ajustes
+        aj = self._tab_ajustes
+        op = aj.slider_opacidad.value() / 100
+        self.editor.set_fondo(bg_path, aj.check_bg_editor.isChecked(), op)
+        self.set_fondo_ventana(bg_path, aj.check_bg_ventana.isChecked(), op)
+
+        # colores del tema
         self.editor.setStyleSheet(
             f"QPlainTextEdit {{ background:{t['fondo_editor']}; color:{t['texto_editor']}; }}"
         )
@@ -599,7 +731,7 @@ class JoJoPIDE(QMainWindow):  # ventana principal
             self.escribir_consola("Flash FAIL", "#F44747")
 
 
-if __name__ == "__main__":  
+if __name__ == "__main__":  # inicializador de la gui
     app = QApplication(sys.argv)
     ventana = JoJoPIDE()
     ventana.show()

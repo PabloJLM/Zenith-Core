@@ -80,7 +80,8 @@
         "inmediatos": "#9B59FF",
         "etiquetas": "#FF85C2",
         "comentarios": "#5A4A6A"
-      }
+      },
+      "bg": "afton.jpg"
     },
     "Mustafar": {
       "fondo_editor": "#0D0D0D",
@@ -96,7 +97,8 @@
         "inmediatos": "#FFD166",
         "etiquetas": "#FF4444",
         "comentarios": "#884444"
-      }
+      },
+      "bg": "mustafar.jpg"
     },
     "Matrix": {
       "fondo_editor": "#000000",
@@ -112,7 +114,9 @@
         "inmediatos": "#66FF66",
         "etiquetas": "#00FFAA",
         "comentarios": "#007700"
-      }
+      },
+      
+      "bg": "matrix.jpg"
     },
     "Halo": {
       "fondo_editor": "#0A1018",
@@ -128,7 +132,8 @@
         "inmediatos": "#80DEEA",
         "etiquetas": "#26C6DA",
         "comentarios": "#2A4A5A"
-      }
+      },
+      "bg": "halo.jpg"
     }
   },
   "Coloridos": {
@@ -146,7 +151,8 @@
         "inmediatos": "#8A2BE2",
         "etiquetas": "#FF3366",
         "comentarios": "#A0A0A0"
-      }
+      },
+      "bg": "cherry.jpeg"
     },
     "Barbie Cyberpunk": {
       "fondo_editor": "#0D0B1A",
@@ -194,7 +200,8 @@
         "inmediatos": "#EBCB8B",
         "etiquetas": "#B48EAD",
         "comentarios": "#4C566A"
-      }
+      },
+      "bg": "teto.jpg"
     }
   },
   "Reze": {
@@ -212,7 +219,9 @@
         "inmediatos": "#2A8A88",
         "etiquetas": "#8A3060",
         "comentarios": "#4A3038"
-      }
+      },
+      
+      "bg": "iris_out.jpg"
     },
     "Reze": {
       "fondo_editor": "#0F111A",
@@ -228,7 +237,9 @@
         "inmediatos": "#9ECE6A",
         "etiquetas": "#BB9AF7",
         "comentarios": "#565F89"
-      }
+      },
+      
+      "bg": "reze.jpg"
     },
     "In the Pool": {
       "fondo_editor": "#101A24",
@@ -244,7 +255,9 @@
         "inmediatos": "#E0AF68",
         "etiquetas": "#9ECEFF",
         "comentarios": "#5C6A82"
-      }
+      },
+      
+      "bg": "in_the_pool.jpg"
     },
     "Miss Bomb": {
       "fondo_editor": "#0A0A0A",
@@ -260,7 +273,9 @@
         "inmediatos": "#FFD166",
         "etiquetas": "#FF4C4C",
         "comentarios": "#6B2A2A"
-      }
+      },
+      
+      "bg": "miss_bomb.jpg"
     },
     "Jane Doe": {
       "fondo_editor": "#080808",
@@ -276,7 +291,9 @@
         "inmediatos": "#B8B8B8",
         "etiquetas": "#F0F0F0",
         "comentarios": "#484848"
-      }
+      },
+      
+      "bg": "jane_doe.jpg"
     }
   }
 }
