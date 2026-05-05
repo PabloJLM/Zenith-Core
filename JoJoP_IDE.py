@@ -3,8 +3,8 @@ import json
 import subprocess
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QRegExp, QSize
-from PyQt5.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QSyntaxHighlighter, QPainter
+from PyQt5.QtCore import Qt, QRegExp
+from PyQt5.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QSyntaxHighlighter
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -20,28 +20,28 @@ try:
 except ImportError:
     tiene_serial = False
 
-# Temas -----------------------------------------
-# Se cargan desde temas.json (mismo directorio que este script)
-# Estructura: { "Categoría": { "Nombre": { ...datos... } } }
-# Para agregar un tema nuevo: solo editar temas.json, sin tocar este archivo
-
-_TEMAS_PATH = Path(__file__).parent / "temas.json"
+_BASE          = Path(__file__).parent
+_TEMAS_PATH    = _BASE / "temas.json"
+_EJEMPLOS_PATH = _BASE / "ejemplos.json"
 
 def cargar_temas() -> dict:
     with _TEMAS_PATH.open(encoding="utf-8") as f:
         return json.load(f)
 
-TEMAS: dict = cargar_temas()
+def cargar_ejemplos() -> dict:
+    with _EJEMPLOS_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
+
+TEMAS: dict    = cargar_temas()
+EJEMPLOS: dict = cargar_ejemplos()
 
 def buscar_tema(nombre: str) -> dict:
     # busca el tema por nombre en todas las categorias
     for categoria in TEMAS.values():
         if nombre in categoria:
             return categoria[nombre]
-    return TEMAS["Básicos"]["Dark"]  # fallback
+    return TEMAS["Reze"]["Reze"]  # fallback
 
-
-# Widget de boton de tema con preview de colores ------------------
 class BotonTema(QPushButton):
     # boton con nombre del tema y 5 bolitas de colores del hl
     def __init__(self, nombre: str, datos: dict, parent=None):
@@ -58,7 +58,6 @@ class BotonTema(QPushButton):
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(8)
 
-        # nombre del tema
         lbl = QLabel(self.nombre)
         lbl.setFont(QFont("Courier New", 9))
         lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -95,14 +94,12 @@ class SelectorTemas(QWidget):
     def __init__(self, ide):
         super().__init__()
         self.ide = ide
-        self._tema_actual = "Dark"
         self._botones: dict[str, BotonTema] = {}
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # lista de categorias
         self.lista_cats = QListWidget()
         self.lista_cats.setFixedWidth(110)
         self.lista_cats.setFont(QFont("Courier New", 9))
@@ -113,13 +110,11 @@ class SelectorTemas(QWidget):
         self.lista_cats.currentRowChanged.connect(self._cambiar_categoria)
         layout.addWidget(self.lista_cats)
 
-        # separador
         sep = QFrame()
         sep.setFrameShape(QFrame.VLine)
         sep.setFixedWidth(1)
         layout.addWidget(sep)
 
-        # scroll con botones de temas
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -134,11 +129,10 @@ class SelectorTemas(QWidget):
         scroll.setWidget(self.contenedor_temas)
         layout.addWidget(scroll)
 
-        # grupo exclusivo de botones
         self.grupo = QButtonGroup(self)
         self.grupo.setExclusive(True)
 
-        # construir todos los botones, ocultar los que no son de la cat inicial
+        # construir todos los botones
         for cat, temas in TEMAS.items():
             for nombre, datos in temas.items():
                 btn = BotonTema(nombre, datos)
@@ -147,9 +141,10 @@ class SelectorTemas(QWidget):
                 btn.clicked.connect(lambda checked, n=nombre: self._seleccionar(n))
                 self._botones[nombre] = btn
 
-        # seleccionar categoria y tema inicial
-        self.lista_cats.setCurrentRow(0)
-        self._marcar_tema("Dark")
+        # arrancar en categoria Reze
+        cats = list(TEMAS.keys())
+        self.lista_cats.setCurrentRow(cats.index("Reze"))
+        self._marcar_tema("Reze")
 
     def _cambiar_categoria(self, idx: int):
         # muestra solo los botones de la categoria seleccionada
@@ -162,24 +157,17 @@ class SelectorTemas(QWidget):
                 self._botones[nombre].setVisible(cat == cat_sel)
 
     def _seleccionar(self, nombre: str):
-        self._tema_actual = nombre
         self.ide.aplicar_tema(nombre)
 
     def _marcar_tema(self, nombre: str):
-        # marca el boton del tema sin disparar la señal
         if nombre in self._botones:
             self._botones[nombre].setChecked(True)
 
-    def tema_actual(self) -> str:
-        return self._tema_actual
-
-
-# Resaltador de sintaxis -------------------------------------------
 class ResaltadorAsm(QSyntaxHighlighter):
     def __init__(self, documento):
         super().__init__(documento)  # inicia lo que resalta el ide de sintaxis
         self.reglas = []
-        self.recargar(TEMAS["Básicos"]["Dark"]["hl"])  # color oscuro al iniciar
+        self.recargar(TEMAS["Reze"]["Reze"]["hl"])  # spider lily al iniciar
 
     def recargar(self, colores):
         self.reglas = []
@@ -212,7 +200,6 @@ class ResaltadorAsm(QSyntaxHighlighter):
                 idx = patron.indexIn(texto, idx + largo)
 
 
-# Pantalla de bienvenida -------------------------------------------
 class PantallaWelcome(QWidget):  # pantalla inicial del IDE
     def __init__(self):
         super().__init__()
@@ -220,7 +207,7 @@ class PantallaWelcome(QWidget):  # pantalla inicial del IDE
         diseno.setAlignment(Qt.AlignCenter)
         diseno.setSpacing(12)
 
-        img_path = Path(__file__).parent / "imgs/resee.jpeg"  # imagen inicial igual inicia si hay o no xd
+        img_path = _BASE / "imgs/resee.jpeg"  # imagen inicial igual inicia si hay o no xd
         if img_path.exists():
             lbl_img = QLabel()
             lbl_img.setPixmap(
@@ -250,7 +237,58 @@ class PantallaWelcome(QWidget):  # pantalla inicial del IDE
         diseno.addWidget(creditos)
 
 
-# Pestaña de ajustes -----------------------------------------------
+class PestanaEjemplos(QWidget):
+
+    def __init__(self, ide):
+        super().__init__()
+        self.ide = ide
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+        self.lista = QListWidget()
+        self.lista.setFixedWidth(160)
+        self.lista.setFont(QFont("Courier New", 9))
+        for nombre in EJEMPLOS.get("snippets", {}):
+            self.lista.addItem(nombre)
+        self.lista.currentTextChanged.connect(self._mostrar)
+        layout.addWidget(self.lista)
+
+        panel = QVBoxLayout()
+
+        self.desc = QLabel("")
+        self.desc.setWordWrap(True)
+        self.desc.setFont(QFont("Courier New", 9))
+        panel.addWidget(self.desc)
+
+        self.preview = QPlainTextEdit()
+        self.preview.setReadOnly(True)
+        self.preview.setFont(QFont("Courier New", 9))
+        panel.addWidget(self.preview)
+
+        btn = QPushButton("Cargar en editor")
+        btn.clicked.connect(self._cargar)
+        panel.addWidget(btn)
+
+        layout.addLayout(panel)
+
+    def _mostrar(self, nombre: str):
+        datos = EJEMPLOS.get("snippets", {}).get(nombre, {})
+        self.desc.setText(datos.get("desc", ""))
+        self.preview.setPlainText(datos.get("code", ""))
+
+    def _cargar(self):
+        # carga el snippet seleccionado directo en el editor
+        item = self.lista.currentItem()
+        if not item:
+            return
+        code = EJEMPLOS.get("snippets", {}).get(item.text(), {}).get("code", "")
+        self.ide.editor.setPlainText(code)
+        self.ide.archivo_actual = None
+        self.ide.setWindowTitle("JoJoP_IDE  —  sin guardar")
+        self.ide.pestanas.setCurrentIndex(1)  # ir al editor
+
+
 class PestanaAjustes(QWidget):
     def __init__(self, ide):  # configura el panel con tema fuente tamaño y rutas
         super().__init__()
@@ -260,7 +298,6 @@ class PestanaAjustes(QWidget):
         diseno.setSpacing(10)
         diseno.setContentsMargins(16, 16, 16, 16)
 
-        # selector de temas con categorias y preview
         grupo_ap = QGroupBox("Apariencia")
         layout_ap = QVBoxLayout(grupo_ap)
 
@@ -335,24 +372,24 @@ class PestanaAjustes(QWidget):
         self.ide.escribir_consola("Rutas actualizadas.", "#4EC9B0")
 
 
-# Ventana principal ------------------------------------------------
 class JoJoPIDE(QMainWindow):  # ventana principal
     def __init__(self):  # añade titulo, tamaño y rutas por defecto
         super().__init__()
         self.setWindowTitle("JoJoP_IDE")
         self.resize(960, 680)
         self.archivo_actual   = None
-        self.ruta_ensamblador = str(Path(__file__).parent / "tools" / "assembler.py")
-        self.ruta_flasher     = str(Path(__file__).parent / "tools" / "uart_flash.py")
+        self.ruta_ensamblador = str(_BASE / "tools" / "assembler.py")
+        self.ruta_flasher     = str(_BASE / "tools" / "uart_flash.py")
         self.construir_ui()
-        self.aplicar_tema("Dark")  # poner el default jsjs
+        self.aplicar_tema("Reze")  # default jsjs
 
     def construir_ui(self):  # crea las pestañas de arriba
         self.pestanas = QTabWidget()
         self.setCentralWidget(self.pestanas)
-        self.pestanas.addTab(PantallaWelcome(),    "Inicio")
-        self.pestanas.addTab(self.crear_editor(),  "Editor")
-        self.pestanas.addTab(PestanaAjustes(self), "Ajustes")
+        self.pestanas.addTab(PantallaWelcome(),      "Inicio")
+        self.pestanas.addTab(self.crear_editor(),    "Editor")
+        self.pestanas.addTab(PestanaEjemplos(self),  "Ejemplos")
+        self.pestanas.addTab(PestanaAjustes(self),   "Ajustes")
 
     def crear_editor(self):  # pone la barra, selector de puerto, editor de texto, consola
         contenedor = QWidget()
@@ -421,7 +458,7 @@ class JoJoPIDE(QMainWindow):  # ventana principal
         self.get_puertos()
         return contenedor
 
-    def aplicar_tema(self, nombre):  # aplica los temas segun elegidos por default esta dark
+    def aplicar_tema(self, nombre):  # aplica los temas segun elegidos por default esta spider lily
         t = buscar_tema(nombre)
 
         self.editor.setStyleSheet(
@@ -563,7 +600,7 @@ class JoJoPIDE(QMainWindow):  # ventana principal
             self.escribir_consola("Flash FAIL", "#F44747")
 
 
-if __name__ == "__main__":  # inicializador de la gui
+if __name__ == "__main__":  
     app = QApplication(sys.argv)
     ventana = JoJoPIDE()
     ventana.show()
