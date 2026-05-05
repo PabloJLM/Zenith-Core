@@ -36,11 +36,11 @@ TEMAS: dict    = cargar_temas()
 EJEMPLOS: dict = cargar_ejemplos()
 
 def buscar_tema(nombre: str) -> dict:
-    # busca el tema por nombre en todas las categorias
+    # busca el tema por nombre 
     for categoria in TEMAS.values():
         if nombre in categoria:
             return categoria[nombre]
-    return TEMAS["Reze"]["Reze"]  # fallback
+    return TEMAS["Reze"]["Reze"]  
 
 class BotonTema(QPushButton):
     # boton con nombre del tema y 5 bolitas de colores del hl
@@ -167,7 +167,7 @@ class ResaltadorAsm(QSyntaxHighlighter):
     def __init__(self, documento):
         super().__init__(documento)  # inicia lo que resalta el ide de sintaxis
         self.reglas = []
-        self.recargar(TEMAS["Reze"]["Reze"]["hl"])  # spider lily al iniciar
+        self.recargar(TEMAS["Reze"]["Reze"]["hl"])  
 
     def recargar(self, colores):
         self.reglas = []
@@ -277,8 +277,7 @@ class PestanaEjemplos(QWidget):
         self.desc.setText(datos.get("desc", ""))
         self.preview.setPlainText(datos.get("code", ""))
 
-    def _cargar(self):
-        # carga el snippet seleccionado directo en el editor
+    def _cargar(self): #carga el ejemplo
         item = self.lista.currentItem()
         if not item:
             return
@@ -361,7 +360,7 @@ class PestanaAjustes(QWidget):
         self.ide.editor.setFont(QFont(nombre, tam))
         self.ide.consola.setFont(QFont(nombre, tam - 1))
 
-    def cambiar_tamanio(self, tam):  # cambia el tamaño de la fuente, la consola siempre es mas pequeña
+    def cambiar_tamanio(self, tam):  # cambia el tamaño de la fuente, la consola siempre es mas pequeña por -1
         nombre = self.combo_fuente.currentText()
         self.ide.editor.setFont(QFont(nombre, tam))
         self.ide.consola.setFont(QFont(nombre, tam - 1))
