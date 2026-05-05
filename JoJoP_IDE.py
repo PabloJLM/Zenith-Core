@@ -3,14 +3,15 @@ import json
 import subprocess
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QRegExp
-from PyQt5.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QSyntaxHighlighter
+from PyQt5.QtCore import Qt, QRegExp, QSize
+from PyQt5.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QSyntaxHighlighter, QPainter
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout,
     QPushButton, QFileDialog, QTextEdit, QPlainTextEdit,
     QLabel, QComboBox, QSplitter, QMessageBox,
-    QSpinBox, QGroupBox, QLineEdit
+    QSpinBox, QGroupBox, QLineEdit, QListWidget, QListWidgetItem,
+    QButtonGroup, QScrollArea, QFrame
 )
 
 try:
@@ -40,6 +41,140 @@ def buscar_tema(nombre: str) -> dict:
     return TEMAS["Básicos"]["Dark"]  # fallback
 
 
+# Widget de boton de tema con preview de colores ------------------
+class BotonTema(QPushButton):
+    # boton con nombre del tema y 5 bolitas de colores del hl
+    def __init__(self, nombre: str, datos: dict, parent=None):
+        super().__init__(parent)
+        self.nombre = nombre
+        self.datos  = datos
+        self.setCheckable(True)
+        self.setFixedHeight(44)
+        self.setCursor(Qt.PointingHandCursor)
+        self._construir()
+
+    def _construir(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+
+        # nombre del tema
+        lbl = QLabel(self.nombre)
+        lbl.setFont(QFont("Courier New", 9))
+        lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addWidget(lbl)
+        layout.addStretch()
+
+        # bolitas de colores del highlight
+        colores_hl = self.datos.get("hl", {})
+        orden = ["instrucciones", "registros", "inmediatos", "etiquetas", "comentarios"]
+        for clave in orden:
+            color = colores_hl.get(clave, "#444444")
+            bolita = QLabel()
+            bolita.setFixedSize(12, 12)
+            bolita.setStyleSheet(
+                f"background:{color}; border-radius:6px; border:1px solid rgba(255,255,255,0.15);"
+            )
+            bolita.setAttribute(Qt.WA_TransparentForMouseEvents)
+            layout.addWidget(bolita)
+
+        # franja de color de fondo del editor
+        franja = QLabel()
+        franja.setFixedSize(18, 28)
+        franja.setStyleSheet(
+            f"background:{self.datos.get('fondo_editor','#1E1E1E')};"
+            f"border:1px solid {self.datos.get('tab_sel','#555')};"
+            f"border-radius:3px;"
+        )
+        franja.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addWidget(franja)
+
+
+class SelectorTemas(QWidget):
+    # panel: lista de categorias a la izquierda, botones de tema a la derecha
+    def __init__(self, ide):
+        super().__init__()
+        self.ide = ide
+        self._tema_actual = "Dark"
+        self._botones: dict[str, BotonTema] = {}
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # lista de categorias
+        self.lista_cats = QListWidget()
+        self.lista_cats.setFixedWidth(110)
+        self.lista_cats.setFont(QFont("Courier New", 9))
+        for cat in TEMAS:
+            item = QListWidgetItem(cat)
+            item.setTextAlignment(Qt.AlignCenter)
+            self.lista_cats.addItem(item)
+        self.lista_cats.currentRowChanged.connect(self._cambiar_categoria)
+        layout.addWidget(self.lista_cats)
+
+        # separador
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setFixedWidth(1)
+        layout.addWidget(sep)
+
+        # scroll con botones de temas
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        self.contenedor_temas = QWidget()
+        self.layout_temas = QVBoxLayout(self.contenedor_temas)
+        self.layout_temas.setContentsMargins(6, 6, 6, 6)
+        self.layout_temas.setSpacing(4)
+        self.layout_temas.addStretch()
+
+        scroll.setWidget(self.contenedor_temas)
+        layout.addWidget(scroll)
+
+        # grupo exclusivo de botones
+        self.grupo = QButtonGroup(self)
+        self.grupo.setExclusive(True)
+
+        # construir todos los botones, ocultar los que no son de la cat inicial
+        for cat, temas in TEMAS.items():
+            for nombre, datos in temas.items():
+                btn = BotonTema(nombre, datos)
+                self.grupo.addButton(btn)
+                self.layout_temas.insertWidget(self.layout_temas.count() - 1, btn)
+                btn.clicked.connect(lambda checked, n=nombre: self._seleccionar(n))
+                self._botones[nombre] = btn
+
+        # seleccionar categoria y tema inicial
+        self.lista_cats.setCurrentRow(0)
+        self._marcar_tema("Dark")
+
+    def _cambiar_categoria(self, idx: int):
+        # muestra solo los botones de la categoria seleccionada
+        cats = list(TEMAS.keys())
+        if idx < 0 or idx >= len(cats):
+            return
+        cat_sel = cats[idx]
+        for cat, temas in TEMAS.items():
+            for nombre in temas:
+                self._botones[nombre].setVisible(cat == cat_sel)
+
+    def _seleccionar(self, nombre: str):
+        self._tema_actual = nombre
+        self.ide.aplicar_tema(nombre)
+
+    def _marcar_tema(self, nombre: str):
+        # marca el boton del tema sin disparar la señal
+        if nombre in self._botones:
+            self._botones[nombre].setChecked(True)
+
+    def tema_actual(self) -> str:
+        return self._tema_actual
+
+
+# Resaltador de sintaxis -------------------------------------------
 class ResaltadorAsm(QSyntaxHighlighter):
     def __init__(self, documento):
         super().__init__(documento)  # inicia lo que resalta el ide de sintaxis
@@ -77,6 +212,7 @@ class ResaltadorAsm(QSyntaxHighlighter):
                 idx = patron.indexIn(texto, idx + largo)
 
 
+# Pantalla de bienvenida -------------------------------------------
 class PantallaWelcome(QWidget):  # pantalla inicial del IDE
     def __init__(self):
         super().__init__()
@@ -114,6 +250,7 @@ class PantallaWelcome(QWidget):  # pantalla inicial del IDE
         diseno.addWidget(creditos)
 
 
+# Pestaña de ajustes -----------------------------------------------
 class PestanaAjustes(QWidget):
     def __init__(self, ide):  # configura el panel con tema fuente tamaño y rutas
         super().__init__()
@@ -123,41 +260,29 @@ class PestanaAjustes(QWidget):
         diseno.setSpacing(10)
         diseno.setContentsMargins(16, 16, 16, 16)
 
+        # selector de temas con categorias y preview
         grupo_ap = QGroupBox("Apariencia")
-        forma_ap = QFormLayout(grupo_ap)
+        layout_ap = QVBoxLayout(grupo_ap)
 
-        # combo con categorias como headers no seleccionables
-        self.combo_tema = QComboBox()
-        for cat, temas in TEMAS.items():
-            # header de categoria (no seleccionable, gris, italica)
-            self.combo_tema.addItem(f"── {cat} ──")
-            idx = self.combo_tema.count() - 1
-            item = self.combo_tema.model().item(idx)
-            item.setFlags(Qt.NoItemFlags)
-            item.setForeground(QColor("#888888"))
-            font_h = QFont()
-            font_h.setItalic(True)
-            item.setFont(font_h)
-            # temas de la categoria con indentacion visual
-            for nombre in temas:
-                self.combo_tema.addItem(f"  {nombre}")
+        self.selector_temas = SelectorTemas(ide)
+        self.selector_temas.setMinimumHeight(200)
+        layout_ap.addWidget(self.selector_temas)
 
-        self.combo_tema.setCurrentText("  Dark")
-        self.combo_tema.currentTextChanged.connect(
-            lambda txt: self.ide.aplicar_tema(txt.strip())
-        )
-        forma_ap.addRow("Tema:", self.combo_tema)
-
+        fila_fuente = QHBoxLayout()
         self.combo_fuente = QComboBox()
         self.combo_fuente.addItems(["Courier New", "Consolas", "Fira Code", "Monospace"])
         self.combo_fuente.currentTextChanged.connect(self.cambiar_fuente)
-        forma_ap.addRow("Fuente:", self.combo_fuente)
+        fila_fuente.addWidget(QLabel("Fuente:"))
+        fila_fuente.addWidget(self.combo_fuente)
 
         self.spin_tamanio = QSpinBox()
         self.spin_tamanio.setRange(8, 24)
         self.spin_tamanio.setValue(10)
         self.spin_tamanio.valueChanged.connect(self.cambiar_tamanio)
-        forma_ap.addRow("Tamaño:", self.spin_tamanio)
+        fila_fuente.addWidget(QLabel("Tamaño:"))
+        fila_fuente.addWidget(self.spin_tamanio)
+        fila_fuente.addStretch()
+        layout_ap.addLayout(fila_fuente)
 
         diseno.addWidget(grupo_ap)
 
@@ -210,6 +335,7 @@ class PestanaAjustes(QWidget):
         self.ide.escribir_consola("Rutas actualizadas.", "#4EC9B0")
 
 
+# Ventana principal ------------------------------------------------
 class JoJoPIDE(QMainWindow):  # ventana principal
     def __init__(self):  # añade titulo, tamaño y rutas por defecto
         super().__init__()
@@ -310,12 +436,16 @@ class JoJoPIDE(QMainWindow):  # ventana principal
             q = t["qss_extra"]
             qss += (
                 f" QPushButton {{ {q} border-radius:3px; padding:3px 8px; }}"
+                f" QPushButton:checked {{ background:{t['tab_sel']}; color:white; }}"
                 f" QComboBox   {{ {q} }}"
                 f" QSpinBox    {{ {q} }}"
                 f" QLineEdit   {{ {q} }}"
                 f" QGroupBox   {{ color:{t['texto_consola']}; }}"
                 f" QTabBar::tab {{ {q} padding:5px 12px; }}"
                 f" QTabBar::tab:selected {{ background:{t['tab_sel']}; color:white; }}"
+                f" QListWidget {{ {q} }}"
+                f" QListWidget::item:selected {{ background:{t['tab_sel']}; color:white; }}"
+                f" QScrollArea {{ border:none; }}"
             )
         self.setStyleSheet(qss)
         self.resaltador.recargar(t["hl"])
