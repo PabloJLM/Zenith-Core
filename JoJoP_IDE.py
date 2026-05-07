@@ -3,8 +3,9 @@ import json
 import subprocess
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QRegExp
+from PyQt5.QtCore import Qt, QRegExp, QPoint, QSize
 from PyQt5.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QSyntaxHighlighter, QPainter
+from PyQt5.QtGui import QMovie
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -21,10 +22,12 @@ except ImportError:
     tiene_serial = False
 
 # Rutas -----------------------------------------
-_BASE          = Path(__file__).parent
-_TEMAS_PATH    = _BASE / "temas.json"
-_EJEMPLOS_PATH = _BASE / "ejemplos.json"
-_BG_PATH       = _BASE / "imgs" / "bg"
+_BASE           = Path(__file__).parent
+_TEMAS_PATH     = _BASE / "temas.json"
+_EJEMPLOS_PATH  = _BASE / "ejemplos.json"
+_MASCOTAS_PATH  = _BASE / "mascotas.json"
+_BG_PATH        = _BASE / "imgs" / "bg"
+_MASCOTAS_DIR   = _BASE / "imgs" / "mascotas"
 
 def cargar_temas() -> dict:
     with _TEMAS_PATH.open(encoding="utf-8") as f:
@@ -34,8 +37,13 @@ def cargar_ejemplos() -> dict:
     with _EJEMPLOS_PATH.open(encoding="utf-8") as f:
         return json.load(f)
 
+def cargar_mascotas() -> dict:
+    with _MASCOTAS_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
+
 TEMAS: dict    = cargar_temas()
 EJEMPLOS: dict = cargar_ejemplos()
+MASCOTAS: dict = cargar_mascotas()
 
 def buscar_tema(nombre: str) -> dict:
     # busca el tema por nombre en todas las categorias
@@ -43,6 +51,89 @@ def buscar_tema(nombre: str) -> dict:
         if nombre in categoria:
             return categoria[nombre]
     return TEMAS["Reze"]["Reze"]  # fallback
+
+
+# Mascota flotante -------------------------------------------------
+class MascotaWidget(QLabel):
+    # label flotante con gif o png, arrastrable con mouse
+    # vive como hijo del viewport del editor para flotar encima del texto
+
+    _TAMANO = 96  # px cuadrado por defecto
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._movie    = None
+        self._drag_pos = QPoint()
+        self.setFixedSize(self._TAMANO, self._TAMANO)
+        self.setScaledContents(True)
+        self.setCursor(Qt.SizeAllCursor)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setToolTip("Arrastra para mover")
+        self.hide()
+
+    def cargar(self, archivo: str | None):
+        # carga gif (QMovie) o png/jpg (QPixmap) segun extension
+        if self._movie:
+            self._movie.stop()
+            self._movie = None
+
+        if not archivo:
+            self.hide()
+            return
+
+        ruta = _MASCOTAS_DIR / archivo
+        if not ruta.exists():
+            self.hide()
+            return
+
+        if ruta.suffix.lower() == ".gif":
+            self._movie = QMovie(str(ruta))
+            self._movie.setScaledSize(QSize(self._TAMANO, self._TAMANO))
+            self.setMovie(self._movie)
+            self._movie.start()
+        else:
+            # png, jpg, etc
+            self.setPixmap(
+                QPixmap(str(ruta)).scaled(
+                    self._TAMANO, self._TAMANO,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+            )
+        self.show()
+        self._ir_esquina()
+
+    def _ir_esquina(self):
+        # posicion inicial: esquina inferior derecha del padre
+        if self.parent():
+            pw = self.parent().width()
+            ph = self.parent().height()
+            self.move(pw - self._TAMANO - 8, ph - self._TAMANO - 8)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+    # arrastre con mouse
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.pos()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            nueva = self.mapToParent(event.pos() - self._drag_pos)
+            # mantener dentro del padre
+            if self.parent():
+                pw = self.parent().width()
+                ph = self.parent().height()
+                nueva.setX(max(0, min(nueva.x(), pw - self.width())))
+                nueva.setY(max(0, min(nueva.y(), ph - self.height())))
+            self.move(nueva)
+
+    def cambiar_tamano(self, px: int):
+        self._TAMANO = px
+        self.setFixedSize(px, px)
+        if self._movie:
+            self._movie.setScaledSize(QSize(px, px))
 
 
 # Editor con imagen de fondo ---------------------------------------
@@ -53,6 +144,8 @@ class EditorConFondo(QPlainTextEdit):
         self._pixmap   = None
         self._opacidad = 0.15
         self._activo   = False
+        # mascota como hijo del viewport
+        self.mascota = MascotaWidget(self.viewport())
 
     def set_fondo(self, ruta: str | None, activo: bool, opacidad: float):
         self._activo   = activo
@@ -62,6 +155,12 @@ class EditorConFondo(QPlainTextEdit):
         else:
             self._pixmap = None
         self.viewport().update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # re-anclar mascota si estaba en esquina
+        if self.mascota.isVisible():
+            self.mascota._ir_esquina()
 
     def paintEvent(self, event):
         # dibuja la imagen antes del texto
@@ -82,7 +181,6 @@ class EditorConFondo(QPlainTextEdit):
 
 # Ventana con imagen de fondo --------------------------------------
 class VentanaConFondo(QMainWindow):
-    # sobreescribe paintEvent para fondo en toda la ventana
     def __init__(self):
         super().__init__()
         self._pixmap   = None
@@ -150,7 +248,6 @@ class BotonTema(QPushButton):
             bolita.setAttribute(Qt.WA_TransparentForMouseEvents)
             layout.addWidget(bolita)
 
-        # franja de color de fondo del editor
         franja = QLabel()
         franja.setFixedSize(18, 28)
         franja.setStyleSheet(
@@ -214,7 +311,6 @@ class SelectorTemas(QWidget):
                 btn.clicked.connect(lambda checked, n=nombre: self._seleccionar(n))
                 self._botones[nombre] = btn
 
-        # arrancar en categoria Reze
         cats = list(TEMAS.keys())
         self.lista_cats.setCurrentRow(cats.index("Reze"))
         self._marcar_tema("Reze")
@@ -402,6 +498,34 @@ class PestanaAjustes(QWidget):
 
         diseno.addWidget(grupo_ap)
 
+        # mascota
+        grupo_mascota = QGroupBox("Mascota")
+        layout_mascota = QVBoxLayout(grupo_mascota)
+
+        fila_m = QHBoxLayout()
+        fila_m.addWidget(QLabel("Mascota:"))
+        self.combo_mascota = QComboBox()
+        self.combo_mascota.addItems(MASCOTAS.keys())
+        self.combo_mascota.currentTextChanged.connect(self._cambiar_mascota)
+        fila_m.addWidget(self.combo_mascota)
+        layout_mascota.addLayout(fila_m)
+
+        fila_t = QHBoxLayout()
+        fila_t.addWidget(QLabel("Tamaño:"))
+        self.slider_mascota = QSlider(Qt.Horizontal)
+        self.slider_mascota.setRange(48, 200)
+        self.slider_mascota.setValue(96)
+        self.slider_mascota.valueChanged.connect(self._cambiar_tamano_mascota)
+        fila_t.addWidget(self.slider_mascota)
+        self.lbl_mascota_tam = QLabel("96px")
+        self.slider_mascota.valueChanged.connect(
+            lambda v: self.lbl_mascota_tam.setText(f"{v}px")
+        )
+        fila_t.addWidget(self.lbl_mascota_tam)
+        layout_mascota.addLayout(fila_t)
+
+        diseno.addWidget(grupo_mascota)
+
         # imagen de fondo
         grupo_bg = QGroupBox("Imagen de fondo")
         layout_bg = QVBoxLayout(grupo_bg)
@@ -417,7 +541,7 @@ class PestanaAjustes(QWidget):
         fila_op = QHBoxLayout()
         fila_op.addWidget(QLabel("Opacidad:"))
         self.slider_opacidad = QSlider(Qt.Horizontal)
-        self.slider_opacidad.setRange(1, 40)   # 1% a 40%
+        self.slider_opacidad.setRange(1, 40)
         self.slider_opacidad.setValue(15)
         self.slider_opacidad.valueChanged.connect(self._actualizar_fondo)
         fila_op.addWidget(self.slider_opacidad)
@@ -459,10 +583,17 @@ class PestanaAjustes(QWidget):
         diseno.addWidget(grupo_rutas)
         diseno.addStretch()
 
+    def _cambiar_mascota(self, nombre: str):
+        archivo = MASCOTAS.get(nombre)
+        self.ide.editor.mascota.cargar(archivo)
+
+    def _cambiar_tamano_mascota(self, px: int):
+        self.ide.editor.mascota.cambiar_tamano(px)
+
     def _actualizar_fondo(self):
         # re-aplica el fondo con los valores actuales de los toggles
-        op  = self.slider_opacidad.value() / 100
-        bg  = self.ide._bg_actual
+        op = self.slider_opacidad.value() / 100
+        bg = self.ide._bg_actual
         self.ide.editor.set_fondo(bg, self.check_bg_editor.isChecked(), op)
         self.ide.set_fondo_ventana(bg, self.check_bg_ventana.isChecked(), op)
 
@@ -554,7 +685,7 @@ class JoJoPIDE(VentanaConFondo):  # ventana principal — hereda fondo de ventan
 
         divisor = QSplitter(Qt.Vertical)
 
-        # editor con soporte de imagen de fondo
+        # editor con soporte de imagen de fondo y mascota flotante
         self.editor = EditorConFondo()
         self.editor.setFont(QFont("Courier New", 10))
         self.editor.setTabStopDistance(28)
@@ -580,12 +711,11 @@ class JoJoPIDE(VentanaConFondo):  # ventana principal — hereda fondo de ventan
     def aplicar_tema(self, nombre):  # aplica los temas segun elegidos por default esta reze
         t = buscar_tema(nombre)
 
-        # imagen de fondo del tema — busca en imgs/bg/
+        # imagen de fondo del tema
         bg_file = t.get("bg")
         bg_path = str(_BG_PATH / bg_file) if bg_file else None
         self._bg_actual = bg_path
 
-        # aplica fondo segun los toggles actuales en ajustes
         aj = self._tab_ajustes
         op = aj.slider_opacidad.value() / 100
         self.editor.set_fondo(bg_path, aj.check_bg_editor.isChecked(), op)
