@@ -21,7 +21,6 @@ try:
 except ImportError:
     tiene_serial = False
 
-# Rutas -----------------------------------------
 _BASE           = Path(__file__).parent
 _TEMAS_PATH     = _BASE / "temas.json"
 _EJEMPLOS_PATH  = _BASE / "ejemplos.json"
@@ -50,21 +49,18 @@ def buscar_tema(nombre: str) -> dict:
     for categoria in TEMAS.values():
         if nombre in categoria:
             return categoria[nombre]
-    return TEMAS["Reze"]["Reze"]  # fallback
+    return TEMAS["Reze"]["Reze"]  
 
-
-# Mascota flotante -------------------------------------------------
 class MascotaWidget(QLabel):
     # label flotante con gif o png, arrastrable con mouse
-    # vive como hijo del viewport del editor para flotar encima del texto
 
-    _TAMANO = 96  # px cuadrado por defecto
+    SIZEE = 96  
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._movie    = None
         self._drag_pos = QPoint()
-        self.setFixedSize(self._TAMANO, self._TAMANO)
+        self.setFixedSize(self.SIZEE, self.SIZEE)
         self.setScaledContents(True)
         self.setCursor(Qt.SizeAllCursor)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -72,7 +68,6 @@ class MascotaWidget(QLabel):
         self.hide()
 
     def cargar(self, archivo: str | None):
-        # carga gif (QMovie) o png/jpg (QPixmap) segun extension
         if self._movie:
             self._movie.stop()
             self._movie = None
@@ -88,14 +83,14 @@ class MascotaWidget(QLabel):
 
         if ruta.suffix.lower() == ".gif":
             self._movie = QMovie(str(ruta))
-            self._movie.setScaledSize(QSize(self._TAMANO, self._TAMANO))
+            self._movie.setScaledSize(QSize(self.SIZEE, self.SIZEE))
             self.setMovie(self._movie)
             self._movie.start()
         else:
             # png, jpg, etc
             self.setPixmap(
                 QPixmap(str(ruta)).scaled(
-                    self._TAMANO, self._TAMANO,
+                    self.SIZEE, self.SIZEE,
                     Qt.KeepAspectRatio,
                     Qt.SmoothTransformation
                 )
@@ -104,16 +99,14 @@ class MascotaWidget(QLabel):
         self._ir_esquina()
 
     def _ir_esquina(self):
-        # posicion inicial: esquina inferior derecha del padre
         if self.parent():
             pw = self.parent().width()
             ph = self.parent().height()
-            self.move(pw - self._TAMANO - 8, ph - self._TAMANO - 8)
+            self.move(pw - self.SIZEE - 8, ph - self.SIZEE - 8)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
 
-    # arrastre con mouse
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._drag_pos = event.pos()
@@ -121,7 +114,7 @@ class MascotaWidget(QLabel):
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.LeftButton:
             nueva = self.mapToParent(event.pos() - self._drag_pos)
-            # mantener dentro del padre
+
             if self.parent():
                 pw = self.parent().width()
                 ph = self.parent().height()
@@ -130,21 +123,20 @@ class MascotaWidget(QLabel):
             self.move(nueva)
 
     def cambiar_tamano(self, px: int):
-        self._TAMANO = px
+        self.SIZEE = px
         self.setFixedSize(px, px)
         if self._movie:
             self._movie.setScaledSize(QSize(px, px))
 
 
-# Editor con imagen de fondo ---------------------------------------
 class EditorConFondo(QPlainTextEdit):
-    # sobreescribe paintEvent para dibujar imagen de fondo con opacidad
+    # sobreescribe 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pixmap   = None
         self._opacidad = 0.15
         self._activo   = False
-        # mascota como hijo del viewport
+        
         self.mascota = MascotaWidget(self.viewport())
 
     def set_fondo(self, ruta: str | None, activo: bool, opacidad: float):
@@ -158,12 +150,12 @@ class EditorConFondo(QPlainTextEdit):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # re-anclar mascota si estaba en esquina
+
         if self.mascota.isVisible():
             self.mascota._ir_esquina()
 
     def paintEvent(self, event):
-        # dibuja la imagen antes del texto
+        
         if self._pixmap and self._activo:
             painter = QPainter(self.viewport())
             painter.setOpacity(self._opacidad)
@@ -178,8 +170,6 @@ class EditorConFondo(QPlainTextEdit):
             painter.end()
         super().paintEvent(event)
 
-
-# Ventana con imagen de fondo --------------------------------------
 class VentanaConFondo(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -211,8 +201,6 @@ class VentanaConFondo(QMainWindow):
             painter.end()
         super().paintEvent(event)
 
-
-# Widget de boton de tema con preview de colores ------------------
 class BotonTema(QPushButton):
     # boton con nombre del tema y 5 bolitas de colores del hl
     def __init__(self, nombre: str, datos: dict, parent=None):
@@ -235,7 +223,6 @@ class BotonTema(QPushButton):
         layout.addWidget(lbl)
         layout.addStretch()
 
-        # bolitas de colores del highlight
         colores_hl = self.datos.get("hl", {})
         orden = ["instrucciones", "registros", "inmediatos", "etiquetas", "comentarios"]
         for clave in orden:
@@ -260,7 +247,6 @@ class BotonTema(QPushButton):
 
 
 class SelectorTemas(QWidget):
-    # panel: lista de categorias a la izquierda, botones de tema a la derecha
     def __init__(self, ide):
         super().__init__()
         self.ide = ide
@@ -333,12 +319,12 @@ class SelectorTemas(QWidget):
             self._botones[nombre].setChecked(True)
 
 
-# Resaltador de sintaxis -------------------------------------------
+# Resaltador 
 class ResaltadorAsm(QSyntaxHighlighter):
     def __init__(self, documento):
         super().__init__(documento)  # inicia lo que resalta el ide de sintaxis
         self.reglas = []
-        self.recargar(TEMAS["Reze"]["Reze"]["hl"])  # reze al iniciar
+        self.recargar(TEMAS["Reze"]["Reze"]["hl"])  # reze al iniciar JSJS
 
     def recargar(self, colores):
         self.reglas = []
@@ -362,7 +348,7 @@ class ResaltadorAsm(QSyntaxHighlighter):
         hl(r";[^\n]*",                                  "comentarios")
         self.rehighlight()
 
-    def highlightBlock(self, texto):  # busca en todo el documento y pone colores highlight
+    def highlightBlock(self, texto):  
         for patron, fmt in self.reglas:
             idx = patron.indexIn(texto)
             while idx >= 0:
@@ -371,8 +357,7 @@ class ResaltadorAsm(QSyntaxHighlighter):
                 idx = patron.indexIn(texto, idx + largo)
 
 
-# Pantalla de bienvenida -------------------------------------------
-class PantallaWelcome(QWidget):  # pantalla inicial del IDE
+class PantallaWelcome(QWidget):  
     def __init__(self):
         super().__init__()
         diseno = QVBoxLayout(self)
@@ -393,7 +378,7 @@ class PantallaWelcome(QWidget):  # pantalla inicial del IDE
         titulo.setAlignment(Qt.AlignCenter)
         diseno.addWidget(titulo)
 
-        subtitulo = QLabel("IDE de Risc V para MicroGT")  # ¿cambiar nombre?
+        subtitulo = QLabel("IDE de Risc V para Zenith-Core")  # ¿cambiar nombre?
         subtitulo.setFont(QFont("Courier New", 13))
         subtitulo.setAlignment(Qt.AlignCenter)
         diseno.addWidget(subtitulo)
@@ -408,10 +393,7 @@ class PantallaWelcome(QWidget):  # pantalla inicial del IDE
         creditos.setAlignment(Qt.AlignCenter)
         diseno.addWidget(creditos)
 
-
-# Pestaña de ejemplos ----------------------------------------------
 class PestanaEjemplos(QWidget):
-    # lista de snippets a la izquierda, descripcion + preview a la derecha
     def __init__(self, ide):
         super().__init__()
         self.ide = ide
@@ -451,7 +433,6 @@ class PestanaEjemplos(QWidget):
         self.preview.setPlainText(datos.get("code", ""))
 
     def _cargar(self):
-        # carga el snippet seleccionado directo en el editor
         item = self.lista.currentItem()
         if not item:
             return
@@ -461,10 +442,8 @@ class PestanaEjemplos(QWidget):
         self.ide.setWindowTitle("JoJoP_IDE  —  sin guardar")
         self.ide.pestanas.setCurrentIndex(1)  # ir al editor
 
-
-# Pestaña de ajustes -----------------------------------------------
 class PestanaAjustes(QWidget):
-    def __init__(self, ide):  # configura el panel con tema fuente tamaño y rutas
+    def __init__(self, ide):  
         super().__init__()
         self.ide = ide
         diseno = QVBoxLayout(self)
@@ -591,7 +570,7 @@ class PestanaAjustes(QWidget):
         self.ide.editor.mascota.cambiar_tamano(px)
 
     def _actualizar_fondo(self):
-        # re-aplica el fondo con los valores actuales de los toggles
+
         op = self.slider_opacidad.value() / 100
         bg = self.ide._bg_actual
         self.ide.editor.set_fondo(bg, self.check_bg_editor.isChecked(), op)
@@ -617,17 +596,15 @@ class PestanaAjustes(QWidget):
         self.ide.ruta_flasher     = self.campo_flasher.text()
         self.ide.escribir_consola("Rutas actualizadas.", "#4EC9B0")
 
-
-# Ventana principal ------------------------------------------------
-class JoJoPIDE(VentanaConFondo):  # ventana principal — hereda fondo de ventana
-    def __init__(self):  # añade titulo, tamaño y rutas por defecto
+class JoJoPIDE(VentanaConFondo):  
+    def __init__(self):  
         super().__init__()
         self.setWindowTitle("JoJoP_IDE")
         self.resize(960, 680)
         self.archivo_actual   = None
         self.ruta_ensamblador = str(_BASE / "tools" / "assembler.py")
         self.ruta_flasher     = str(_BASE / "tools" / "uart_flash.py")
-        self._bg_actual       = None  # ruta de imagen del tema actual
+        self._bg_actual       = None  
         self.construir_ui()
         self.aplicar_tema("Reze")  # default jsjs
 
@@ -861,7 +838,7 @@ class JoJoPIDE(VentanaConFondo):  # ventana principal — hereda fondo de ventan
             self.escribir_consola("Flash FAIL", "#F44747")
 
 
-if __name__ == "__main__":  # inicializador de la gui
+if __name__ == "__main__":  
     app = QApplication(sys.argv)
     ventana = JoJoPIDE()
     ventana.show()
