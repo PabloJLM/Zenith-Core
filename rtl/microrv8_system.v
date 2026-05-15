@@ -1,10 +1,5 @@
 `default_nettype none
 // Primer micro de 8 bits, arquitectura RISC-V (reducida xd)
-// Periféricos:
-//   - GPIO 8 bits (MMIO 0x80-0x82)
-//   - UART TX/RX 115200 8N1  (MMIO 0x83-0x84)
-//   - PWM 8 bits               (MMIO 0x85-0x87)
-//   - UART Loader (para programar en UART)
 // Mapa de memoria de datos
 //   0x00-0x7F : RAM 128 bytes
 //   0x80      : GPIO_OUT
