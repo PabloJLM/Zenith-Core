@@ -61,18 +61,47 @@ El sistema completo vive en `microrv8_system.v`. El CPU tiene una FSM de 6 estad
 
 ![Demo LEDs](imgs/demo.gif)
 
-*Contador binario corriendo en la FPGA después se le carga un programa que enciende todos los LED*
+*Contador binario corriendo en la FPGA después de ser cargado por UART*
 
 </div>
+
+---
+
+## JoJoP IDE
+
+IDE gráfico para escribir, ensamblar y flashear programas directamente desde la interfaz sin tocar la terminal.
+
+<div align="center">
+
+![Editor con syntax highlighting](imgs/ide.png)
+
+</div>
+
+<div align="center">
+
+| Ejemplos integrados | Temas y ajustes |
+|:-:|:-:|
+| ![Ejemplos](imgs/ide_ejemplos.png) | ![Ajustes](imgs/ide_temas.png) |
+
+</div>
+
+- Syntax highlighting por tipo de instruccion (ADDI, STORE, BEQ, JUMP en colores distintos)
+- Biblioteca de ejemplos listos para cargar en el editor
+- Temas visuales configurables con paleta de colores personalizable
+- Selector de puerto COM y flash directo a la FPGA con un clic
+- Log de salida del ensamblador integrado en la ventana
+
+```bash
+python3 JoJoP_IDE.py
+```
+
+> **Pendiente:** distribucion como ejecutable `.exe` para Windows sin necesidad de instalar Python.
 
 ---
 
 ## Inicio rápido
 
 ```bash
-# IDE grafico: escribir, ensamblar y flashear
-python3 JoJoP_IDE.py
-
 # GUI de simulacion
 python3 sim_gui.py
 ```
@@ -187,6 +216,6 @@ Ver `docs/Instalacion.md` para instrucciones detalladas.
 
 <div align="center">
 
-Diseñado en Guatemala Por Pablo Lopez
+Diseñado en Guatemala por Pablo Lopez
 
 </div>
