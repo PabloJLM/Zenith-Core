@@ -1,10 +1,5 @@
 `default_nettype none
 `timescale 1ns / 1ps
-// ============================================================================
-// Testbench - CPU Core (unit test) - ISA revision 2
-// ============================================================================
-// Memoria de instrucciones asincrona para testing directo sin latencia BRAM.
-//
 // Programa de prueba:
 //   0: ADDI r1, r0, 5    r1=5
 //   1: ADDI r2, r0, 3    r2=3
@@ -16,7 +11,6 @@
 //   7: BEQ  r4, r4, 1   branch tomado -> PC=9
 //   8: NOP               no se ejecuta
 //   9: JUMP 0            loop
-// ============================================================================
 
 module tb_cpu;
 
@@ -63,13 +57,6 @@ module tb_cpu;
         mem_rdata = 8'hAB;
         errors = 0;
 
-        // ISA revision 2 encodings
-        // I-type: [15:13]=op [12:10]=rd [9:7]=rs1 [6:4]=funct3 [3:0]=imm4
-        // R-type: [15:13]=op [12:10]=rd [9:7]=rs1 [6:4]=rs2    [3:1]=funct3 [0]=0
-        // B-type: [15:13]=op [12:10]=rs1 [9:7]=rs2 [3:0]=imm4
-        // J-type: [15:13]=op [12:10]=rd  [9:0]=target
-        // O-type: [15:13]=op [12:10]=0   [9:7]=rs1
-
         // 0: ADDI r1, r0, 5  -> op=000 rd=001 rs1=000 funct3=000 imm=0101
         imem[0]  = 16'b000_001_000_000_0101;
         // 1: ADDI r2, r0, 3  -> op=000 rd=010 rs1=000 funct3=000 imm=0011
@@ -100,7 +87,6 @@ module tb_cpu;
         rst_n = 1;
         $display("[%0t ns] Reset liberado", $time);
 
-        // 10 instrucciones x 5 ciclos = 50 ciclos por vuelta; correr 3 vueltas
         repeat(160) @(posedge clk);
 
         $display("[%0t ns] GPIO = 0x%02X (esperado 0x05)", $time, gpio_out);
