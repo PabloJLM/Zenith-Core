@@ -45,7 +45,8 @@ module cpu_core (
     wire [2:0] f_fn3 = ir[6:4];
     wire [3:0] f_imm = ir[3:0];
     wire [8:0] f_tgt = ir[8:0];
-    wire [2:0] f_rs2r= ir[3:1];
+    wire [2:0] f_rs2  = ir[6:4];   // rs2 para R-type (ALU-Reg)   [FIX]
+    wire [2:0] f_fn3r = ir[3:1];   // funct3 para R-type (ALU-Reg) [FIX]
     wire [7:0] se8   = {{4{f_imm[3]}}, f_imm};
     wire [8:0] se9   = {{5{f_imm[3]}}, f_imm};
 
@@ -119,7 +120,7 @@ module cpu_core (
                     rs1_addr_r <= instruction_in[9:7];
 
                     case (instruction_in[15:13])
-                        3'b001: rs2_addr_r <= instruction_in[3:1]; // R-type: rs2 en [3:1]
+                        3'b001: rs2_addr_r <= instruction_in[6:4]; // R-type: rs2 en [6:4]  [FIX]
                         3'b011: rs2_addr_r <= instruction_in[12:10]; // STORE: dato en f_rd
                         3'b100: rs2_addr_r <= instruction_in[12:10]; // BEQ: rs1 en f_rd
                         default: rs2_addr_r <= 3'd0;
@@ -137,7 +138,7 @@ module cpu_core (
                             alu_b  <= se8;
                         end
                         3'b001: begin // ALU-R
-                            alu_op <= f_fn3;
+                            alu_op <= f_fn3r;   // funct3 de R-type en [3:1]  [FIX]
                             alu_b  <= rs2_data;
                         end
                         3'b010: begin // LOAD: addr = rs1 + imm
