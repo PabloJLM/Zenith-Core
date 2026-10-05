@@ -1,7 +1,4 @@
-# Instalación y síntesis — MicroRV8-GT
-
-Primer microcontrolador de 8 bits basado en RISC-V diseñado en Guatemala.
-
+# Instalación
 ---
 
 ## Herramientas necesarias
