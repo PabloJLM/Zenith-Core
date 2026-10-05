@@ -3,10 +3,25 @@
 // ============================================================================
 // Testbench - Sistema Completo MicroRV8-GT
 // ============================================================================
-// Ejecuta el programa por defecto (contador en GPIO) y verifica que:
+// Ejecuta un programa corto (no el firmware de fabrica) y verifica que:
 //   1. El CPU avanza el PC correctamente
 //   2. El GPIO cambia de valor
 //   3. El FSM recorre los 5 estados
+//
+// NOTA (investigacion 2026-09-18): el programa por defecto de
+// instruction_memory.v es el "parpadeo" real de la placa: usa un delay
+// loop anidado (r2 de 0..255 dentro de r3 de 0..255, repetido 8 veces
+// por cada incremento de r1) para dar ~1s de retardo a 27 MHz en
+// hardware real. A la frecuencia simulada de este testbench (1 MHz,
+// elegida para que la UART simule rapido) eso equivale a varios
+// MILLONES de ciclos de reloj solo para ver el segundo cambio real de
+// GPIO -> con 50000 ciclos el test nunca llegaba a 3 cambios (solo
+// detectaba 2: el valor inicial en 0 y el primer OUT). No es un bug de
+// RTL, es que el testbench corria el firmware de produccion en vez de
+// un programa de prueba. Se soluciona cargando aqui un programa corto
+// y determinista directamente en la ROM (dut.imem.rom) antes de salir
+// de reset, para validar la integracion CPU + bus MMIO + GPIO sin
+// depender del retardo real del firmware.
 //
 // Uso:
 //   iverilog -o tb_system.vvp tb_system.v microrv8_system.v cpu_core.v \
@@ -85,13 +100,30 @@ module tb_system;
         // Reset
         rst_n = 0;
         repeat(10) @(posedge clk);
+
+        // Cargar un programa corto de prueba directamente en la ROM,
+        // en vez del firmware de fabrica (ver nota arriba). Sale por
+        // GPIO tres valores distintos y luego se detiene en un loop.
+        //   0: ADDI r1, r0, 1   r1=1
+        //   1: OUT  r1          gpio=1
+        //   2: ADDI r1, r1, 1   r1=2
+        //   3: OUT  r1          gpio=2
+        //   4: ADDI r1, r1, 1   r1=3
+        //   5: OUT  r1          gpio=3
+        //   6: JUMP 6           detenerse (loop infinito)
+        dut.imem.rom[0] = 16'b000_001_000_000_0001; // ADDI r1,r0,1
+        dut.imem.rom[1] = 16'b110_000_001_000_0000; // OUT  r1
+        dut.imem.rom[2] = 16'b000_001_001_000_0001; // ADDI r1,r1,1
+        dut.imem.rom[3] = 16'b110_000_001_000_0000; // OUT  r1
+        dut.imem.rom[4] = 16'b000_001_001_000_0001; // ADDI r1,r1,1
+        dut.imem.rom[5] = 16'b110_000_001_000_0000; // OUT  r1
+        dut.imem.rom[6] = 16'b111_000_000_000_0110; // JUMP 6
+
         rst_n = 1;
         $display("[%0t ns] Reset liberado", $time);
 
-        // Ejecutar suficientes ciclos para ver varios incrementos del contador
-        // Cada instruccion toma 5 ciclos. El programa tiene 9 instrucciones.
-        // Necesitamos al menos 10 iteraciones del loop: 9*5*10 = 450 ciclos
-        repeat(50000) @(posedge clk);
+        // 7 instrucciones x 6 ciclos/instr (FSM de 6 estados) + margen
+        repeat(300) @(posedge clk);
 
         // Verificaciones
         $display("");
