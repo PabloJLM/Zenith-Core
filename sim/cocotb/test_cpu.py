@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
@@ -88,7 +89,9 @@ async def alu_and_gpio(dut):
     assert 8 not in retired, "NOP at address 8 must be skipped by the taken BEQ"
     dut._log.info(f"PC sequence = {retired[:12]}  (address 8 skipped)  OK")
 
-    out = os.environ.get("ZC_TRACE", "cocotb_trace.json")
+    default = Path(__file__).resolve().parents[2] / "build" / "cocotb" / "cocotb_trace.json"
+    out = Path(os.environ.get("ZC_TRACE", default))
+    out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump({"program": LISTING, "states": STATES, "trace": trace}, f)
 

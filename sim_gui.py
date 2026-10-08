@@ -349,6 +349,7 @@ class SimGUI:
 
             env = {
                 "PYTHONDONTWRITEBYTECODE": "1",
+                "ZC_OUTDIR": str(out),
                 "ZC_TRACE": str(out / "cocotb_trace.json"),
             }
 

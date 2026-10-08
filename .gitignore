@@ -1,2 +1,5 @@
 gtkwave-3.3.100-bin-win64
 output
+*.hex
+*.bin
+fotoss

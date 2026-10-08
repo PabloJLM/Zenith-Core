@@ -1,5 +1,7 @@
 import os
 import sys
+
+sys.dont_write_bytecode = True
 from pathlib import Path
 
 from cocotb_tools.runner import get_runner
@@ -27,6 +29,8 @@ def main():
         test_module="test_cpu",
         build_dir=BUILD,
         test_dir=HERE,
+        results_xml=str(BUILD / "results.xml"),
+        extra_env={"PYTHONDONTWRITEBYTECODE": "1"},
         waves=True,
     )
 
