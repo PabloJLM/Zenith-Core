@@ -7,11 +7,9 @@ import os
 import threading
 import pathlib
 
-# Si GTKWave no esta en PATH, configurar la ruta aqui:
-# Windows: GTKWAVE_PATH = r"C:\gtkwave64\bin\gtkwave.exe"
 GTKWAVE_PATH = None
 
-# Orden de compilacion de los modulos del proyecto
+
 PROJECT_FILES = [
     "alu.v",
     "regfile.v",
@@ -43,7 +41,7 @@ def find_gtkwave():
 class SimGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("MicroRV8-GT Simulator")
+        self.root.title("Probador de testbenches")
         self.root.geometry("780x640")
         self.root.resizable(True, True)
 
@@ -51,6 +49,8 @@ class SimGUI:
         self.tb_file     = tk.StringVar()
         self.test_file   = tk.StringVar()
         self.top_module  = tk.StringVar()
+        self.out_dir     = tk.StringVar(
+            value=str(pathlib.Path(__file__).resolve().parent / "output"))
         self.mode        = tk.IntVar(value=1)
         self.vvp_path    = None
 
@@ -64,7 +64,6 @@ class SimGUI:
 
         self._build_ui()
 
-    # ------------------------------------------------------------------ UI
 
     def _build_ui(self):
         P = {"padx": 8, "pady": 3}
@@ -76,15 +75,22 @@ class SimGUI:
             side="left", padx=4, pady=4)
         tk.Button(f, text="...", command=self._pick_dir, width=3).pack(side="left")
 
+        # Carpeta de salida
+        fo = tk.LabelFrame(self.root, text="Carpeta de salida (vvp, vcd, fst, logs)")
+        fo.pack(fill="x", **P)
+        tk.Entry(fo, textvariable=self.out_dir, width=70).pack(
+            side="left", padx=4, pady=4)
+        tk.Button(fo, text="...", command=self._pick_out, width=3).pack(side="left")
+
         # Modo
         fm = tk.LabelFrame(self.root, text="Modo de simulacion")
         fm.pack(fill="x", **P)
         tk.Radiobutton(fm,
-            text="Testbench Verilog  —  iverilog + vvp + GTKWave",
+            text="Testbench",
             variable=self.mode, value=1,
             command=self._mode_changed).pack(anchor="w", padx=8, pady=2)
         tk.Radiobutton(fm,
-            text="cocotb  —  Python directo, sin Make ni Makefile",
+            text="cocotb",
             variable=self.mode, value=2,
             command=self._mode_changed).pack(anchor="w", padx=8, pady=2)
 
@@ -121,9 +127,10 @@ class SimGUI:
         self._status(ft, "cocotb",   self.cocotb_ok,
                      "OK" if self.cocotb_ok else "NO — pip install cocotb")
 
-        # Botones
+        # Botoes
         fb = tk.Frame(self.root)
         fb.pack(fill="x", **P)
+        self.fb = fb
         btns = [
             ("Compilar",  self._compile,   "#1565C0"),
             ("Simular",   self._simulate,  "#2E7D32"),
@@ -140,6 +147,7 @@ class SimGUI:
         # Log
         fl = tk.LabelFrame(self.root, text="Log")
         fl.pack(fill="both", expand=True, **P)
+        self.fl = fl
         self.log = scrolledtext.ScrolledText(
             fl, height=14, font=("Courier New", 9),
             bg="#1e1e1e", fg="#d4d4d4", insertbackground="white")
@@ -156,10 +164,10 @@ class SimGUI:
     def _mode_changed(self):
         if self.mode.get() == 1:
             self.frm_c.pack_forget()
-            self.frm_v.pack(fill="x", padx=8, pady=3, before=self.root.pack_slaves()[4])
+            self.frm_v.pack(fill="x", padx=8, pady=3, before=self.fl)
         else:
             self.frm_v.pack_forget()
-            self.frm_c.pack(fill="x", padx=8, pady=3, before=self.root.pack_slaves()[3])
+            self.frm_c.pack(fill="x", padx=8, pady=3, before=self.fb)
 
     # ------------------------------------------------------------ Selectores
 
@@ -167,6 +175,16 @@ class SimGUI:
         d = filedialog.askdirectory(initialdir=self.project_dir.get())
         if d:
             self.project_dir.set(d)
+
+    def _pick_out(self):
+        d = filedialog.askdirectory(initialdir=self.out_dir.get())
+        if d:
+            self.out_dir.set(d)
+
+    def _out(self):
+        d = pathlib.Path(self.out_dir.get()).expanduser()
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
     def _pick_tb(self):
         f = filedialog.askopenfilename(
@@ -229,12 +247,12 @@ class SimGUI:
             self._log("ERROR: seleccionar un testbench .v")
             return False
 
-        proj = pathlib.Path(self.project_dir.get())
-        out  = str(proj / "output.vvp")
+        outdir = self._out()
+        out  = str(outdir / "output.vvp")
         cmd  = ["iverilog", "-g2012", "-o", out] + self._get_sources() + [tb]
 
         self._log(f"\n[COMPILAR]\n{' '.join(cmd)}\n")
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(proj))
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(outdir))
         if r.stdout: self._log(r.stdout)
         if r.stderr: self._log(r.stderr)
         if r.returncode != 0:
@@ -273,11 +291,11 @@ class SimGUI:
                 "  Luego configurar GTKWAVE_PATH en sim_gui.py"
             )
             return
-        proj = pathlib.Path(self.project_dir.get())
-        vcds = sorted(proj.glob("*.vcd"),
+        outdir = self._out()
+        vcds = sorted([*outdir.rglob("*.vcd"), *outdir.rglob("*.fst")],
                       key=lambda p: p.stat().st_mtime, reverse=True)
         if not vcds:
-            self._log("ERROR: no hay .vcd. Simular primero.")
+            self._log(f"ERROR: no hay .vcd/.fst en {outdir}. Simular primero.")
             return
         vcd = vcds[0]
         self._log(f"\n[GTKWAVE] {vcd}")
@@ -312,74 +330,130 @@ class SimGUI:
         return True
 
     def _cocotb_thread(self, test_path, top):
-        """
-        Corre cocotb usando su Python API directamente.
-        Esto es lo mismo que hace Make internamente, pero sin Make.
-
-        Lo que hace cocotb_tools.runner.get_runner("icarus"):
-          1. runner.build():
-               - Escribe un archivo cocotb_iverilog_dump.v con un modulo auxiliar
-               - Llama: iverilog -g2012 -s cocotb_iverilog_dump -o sim.vvp <fuentes>
-          2. runner.test():
-               - Setea las variables de entorno que cocotb necesita:
-                   COCOTB_TOPLEVEL   = nombre del modulo DUT
-                   COCOTB_TEST_MODULES = nombre del modulo Python de tests
-                   LIBPYTHON_LOC     = ruta al .so de Python (para VPI)
-                   PYTHONPATH        = rutas donde buscar el modulo de tests
-               - Llama: vvp -M <libs_dir> -m libcocotbvpi_icarus sim.vvp
-               - El VPI hook carga cocotb, que importa el modulo Python y corre los tests
-        """
         try:
             from cocotb_tools.runner import get_runner
 
-            proj      = pathlib.Path(self.project_dir.get())
-            test_dir  = test_path.parent
-            test_mod  = test_path.stem
-            build_dir = proj / "sim_build" / test_mod
+            test_dir = test_path.parent
+            test_mod = test_path.stem
+            out      = self._out()
+            work     = out / "cocotb" / test_mod
+            work.mkdir(parents=True, exist_ok=True)
+            build_log = work / "build.log"
+            sim_log   = work / "sim.log"
+            xml       = work / "results.xml"
 
-            # Fuentes: modulos del proyecto + cualquier .v en el directorio del test
             sources = [pathlib.Path(f) for f in self._get_sources_silent()]
             for extra in test_dir.glob("*.v"):
                 if extra not in sources:
                     sources.append(extra)
 
-            # El directorio del test tiene que estar en PYTHONPATH
-            env = os.environ.copy()
-            pypath = str(test_dir)
-            if env.get("PYTHONPATH"):
-                pypath += os.pathsep + env["PYTHONPATH"]
-            env["PYTHONPATH"] = pypath
+            env = {
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "ZC_TRACE": str(out / "cocotb_trace.json"),
+            }
 
+            self._log_safe(f"\n[COCOTB] {top}  <-  {test_path.name}")
             runner = get_runner("icarus")
-
-            self._log_safe(f"Compilando '{top}' con {len(sources)} archivo(s) fuente...")
             runner.build(
-                verilog_sources=sources,
+                sources=sources,
                 hdl_toplevel=top,
-                build_dir=str(build_dir),
+                build_dir=str(work),
                 always=True,
                 timescale=("1ns", "1ps"),
-                extra_env=env,
+                waves=True,
+                log_file=str(build_log),
             )
+            try:
+                runner.test(
+                    hdl_toplevel=top,
+                    test_module=test_mod,
+                    build_dir=str(work),
+                    test_dir=str(test_dir),
+                    extra_env=env,
+                    waves=True,
+                    results_xml=str(xml),
+                    log_file=str(sim_log),
+                )
+            except SystemExit:
+                pass
+            self._cocotb_report(sim_log, xml, work)
 
-            self._log_safe(f"Ejecutando '{test_mod}'...")
-            runner.test(
-                hdl_toplevel=top,
-                test_module=test_mod,
-                build_dir=str(build_dir),
-                extra_env=env,
-            )
-
-            self._log_safe("\nTests cocotb finalizados.")
-
-        except SystemExit as e:
-            code = e.code if isinstance(e.code, int) else 0
-            if code == 0:
-                self._log_safe("OK: todos los tests pasaron.")
-            else:
-                self._log_safe(f"FAIL: {code} test(s) fallaron.")
+        except subprocess.CalledProcessError:
+            self._log_safe("FAIL: error de compilacion")
+            try:
+                tail = (work / "build.log").read_text(
+                    encoding="utf-8", errors="replace").strip().splitlines()[-20:]
+                self._log_safe("\n".join(tail))
+            except Exception:
+                pass
         except Exception as e:
             self._log_safe(f"ERROR: {e}")
+
+    def _cocotb_report(self, sim_log, xml, work):
+        import re
+        import xml.etree.ElementTree as ET
+
+        pat = re.compile(
+            r"^\s*(?:-\.--|[\d.]+)ns\s+(INFO|WARNING|ERROR|CRITICAL)\s+(\S+)\s+(.*)$")
+        noise = ("Seeding", "Initialized cocotb", "Running on", "VPI registered",
+                 "Running tests", "Unexpected sys.executable", "vpi_iterate",
+                 "Using Python", "Results file")
+        try:
+            raw = sim_log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            raw = []
+
+        lines, in_tb = [], False
+        for ln in raw:
+            m = pat.match(ln)
+            if m:
+                in_tb = False
+                lvl, logger, msg = m.groups()
+                msg = msg.strip()
+                if logger.startswith("gpi") or any(n in msg for n in noise):
+                    continue
+                if msg.startswith("*"):
+                    continue
+                if logger == "cocotb.regression":
+                    mm = re.match(r"running (\S+) \(\d+/\d+\)", msg)
+                    if mm:
+                        lines.append(f"  {mm.group(1)}")
+                    elif msg.endswith(" failed"):
+                        lines.append("    -> FAILED")
+                        in_tb = True
+                    continue
+                lines.append(f"    {msg}" if lvl == "INFO" else f"    {lvl}: {msg}")
+            elif in_tb and ln.strip() and not ln.lstrip().startswith("**"):
+                lines.append("      " + ln.strip())
+
+        if lines:
+            self._log_safe("\n".join(lines))
+
+        try:
+            root = ET.parse(xml).getroot()
+        except Exception:
+            self._log_safe("FAIL: no se genero results.xml")
+            if raw:
+                self._log_safe("\n".join(raw[-15:]))
+            return
+
+        self._log_safe("")
+        total = passed = 0
+        for tc in root.iter("testcase"):
+            total += 1
+            name = f"{tc.get('classname', '')}.{tc.get('name', '')}".strip(".")
+            bad = any(tc.find(t) is not None for t in ("failure", "error"))
+            skip = tc.find("skipped") is not None
+            status = "FAIL" if bad else ("SKIP" if skip else "PASS")
+            if status == "PASS":
+                passed += 1
+            t = next((q.get("value") for q in tc.iter("property")
+                      if q.get("name") == "sim_time_duration"), None)
+            tt = f"  {float(t):.0f} ns" if t else ""
+            self._log_safe(f"  {status}  {name}{tt}")
+        verdict = "PASSED" if total and passed == total else "FAILED"
+        self._log_safe(f"\n{verdict}  ({passed}/{total} tests)")
+        self._log_safe(f"Salida: {work}")
 
     def _get_sources_silent(self):
         """Como _get_sources pero sin loggear advertencias (para usar desde hilo)."""
