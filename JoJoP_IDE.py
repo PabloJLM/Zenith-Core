@@ -385,7 +385,7 @@ class PantallaWelcome(QWidget):
 
         creditos = QLabel(
             "Desarrollado por Pablo Jose Lopez Mazariegos.\n"
-            "Hecho con amor y monster ultra\n"
+            #"Hecho con amor y monster ultra\n"
             "Guatemala, 2026\n\n"
             "https://github.com/PabloJLM"
         )
